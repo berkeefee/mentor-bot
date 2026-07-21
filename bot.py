@@ -397,7 +397,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Dosyayı Gemini Files API'ye yükle
         print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path}")
-        media_file = client.files.upload(file=audio_path, mime_type="audio/ogg")
+        media_file = client.files.upload(file=audio_path, config=types.UploadFileConfig(mime_type="audio/ogg"))
         
         tarih_bugun = datetime.now().strftime("%Y-%m-%d")
         tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
