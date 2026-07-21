@@ -303,6 +303,22 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("💡 Doğru format: getir YYYY-MM-DD")
         return
 
+    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD) ---
+    if gelen_mesaj.lower().startswith("sil"):
+        tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
+        if tarih_bul:
+            silinecek_tarih = tarih_bul.group(0)
+            conn = db_manager.get_connection()
+            cursor = conn.cursor()
+            p = db_manager.get_placeholder()
+            cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (silinecek_tarih,))
+            conn.commit()
+            conn.close()
+            await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından başarıyla silindi!")
+        else:
+            await update.message.reply_text("💡 Doğru format: sil YYYY-MM-DD")
+        return
+
     # --- NORMAL GÜNLÜK RAPOR GİRİŞİ ---
     await update.message.reply_text("⚡ Verileriniz işleniyor, Gemini analizi başlatıldı...")
     
@@ -381,7 +397,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Dosyayı Gemini Files API'ye yükle
         print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path}")
-        media_file = client.files.upload(file=audio_path)
+        media_file = client.files.upload(file=audio_path, mime_type="audio/ogg")
         
         tarih_bugun = datetime.now().strftime("%Y-%m-%d")
         tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")

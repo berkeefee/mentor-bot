@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local database files
+*.db
+*.db-journal
+
+# Local logs
+*.log
+vbs_debug.txt
+
+# Generated charts/plots
+ilerleme_grafigi.png
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
