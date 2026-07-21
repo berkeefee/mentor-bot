@@ -2,7 +2,7 @@ import os
 import sys
 import sqlite3
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -360,6 +360,126 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Analiz sırasında bir hata oluştu: {str(e)}")
 
 
+async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sesli mesajları indirir, transkribe eder ve Gemini ile analiz eder"""
+    ses = update.message.voice
+    if not ses:
+        return
+        
+    if not client:
+        await update.message.reply_text("❌ Gemini API Key tanımlı değil, ses analizi yapılamaz!")
+        return
+        
+    await update.message.reply_text("🎙️ Ses kaydınız alındı. Transkripsiyon ve Gemini analizi başlatılıyor...")
+    
+    audio_path = f"ses_kaydi_{update.message.message_id}.ogg"
+    
+    try:
+        # Ses dosyasını indir
+        file_obj = await ses.get_file()
+        await file_obj.download_to_drive(audio_path)
+        
+        # Dosyayı Gemini Files API'ye yükle
+        print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path}")
+        media_file = client.files.upload(file=audio_path)
+        
+        tarih_bugun = datetime.now().strftime("%Y-%m-%d")
+        tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        gecmis_konsept = son_kayitlari_getir(limit=5)
+        
+        prompt = (
+            f"Referans Tarihler: Bugün = {tarih_bugun}, Dün = {tarih_dun}\n"
+            f"Geçmiş Performanslar:\n{gecmis_konsept}\n\n"
+            f"Görevlerin:\n"
+            f"1. Ekteki ses kaydını dinle ve kelimesi kelimesine TÜRKÇE transkripsiyonunu (dökümünü) yap.\n"
+            f"2. Ses kaydında geçen ifadeleri analiz et. Eğer kullanıcı dün yaptıkları için konuşuyorsa hedef tarihi dünün tarihi ({tarih_dun}) olarak belirle. Aksi halde bugünün tarihi ({tarih_bugun}) olarak kabul et.\n"
+            f"3. Bu dökümü sanki kullanıcı metin yazmış gibi analiz edip karne üret.\n\n"
+            f"YANIT FORMATIN KESİNLİKLE ŞÖYLE OLMALIDIR:\n"
+            f"TARİH: [Belirlenen hedef tarih, format: YYYY-MM-DD]\n"
+            f"DÖKÜM:\n[Ses kaydının tam Türkçe dökümü]\n\n"
+            f"ANALİZ:\n[Standart günlük mentor analiziniz ve karneniz]\n"
+        )
+        
+        primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+        try:
+            response = client.models.generate_content(
+                model=primary_model,
+                contents=[media_file, prompt],
+                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+            )
+        except Exception as primary_error:
+            fallback_model = "gemini-2.5-flash" if primary_model != "gemini-2.5-flash" else "gemini-1.5-flash"
+            print(f"[Model Uyari]: {primary_model} ses analizi hatası ({primary_error}). {fallback_model} modeline geçiliyor...", file=sys.stderr)
+            response = client.models.generate_content(
+                model=fallback_model,
+                contents=[media_file, prompt],
+                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+            )
+            
+        full_text = response.text
+        
+        # Gemini Files API'den dosyayı temizle
+        try:
+            client.files.delete(name=media_file.name)
+        except Exception as file_del_err:
+            print(f"[Uyari]: Gemini Files silinemedi: {file_del_err}", file=sys.stderr)
+            
+        # Yanıtı parçala
+        hedef_tarih = tarih_bugun
+        döküm_bolumu = ""
+        analiz_bolumu = ""
+        
+        tarih_bulucu = re.search(r"TARİH:\s*(\d{4}-\d{2}-\d{2})", full_text)
+        if tarih_bulucu:
+            hedef_tarih = tarih_bulucu.group(1)
+            
+        if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
+            parts = full_text.split("ANALİZ:")
+            döküm_bolumu = parts[0].replace("DÖKÜM:", "").replace(f"TARİH: {hedef_tarih}", "").strip()
+            analiz_bolumu = parts[1].strip()
+        else:
+            döküm_bolumu = "Döküm ayıklanamadı."
+            analiz_bolumu = full_text
+            
+        # Kullanıcıya yanıtı gönder
+        await update.message.reply_text(f"✍️ **SES DÖKÜMÜ ({hedef_tarih}):**\n\"{döküm_bolumu}\"\n\n{analiz_bolumu}")
+        
+        # Puan ayıkla
+        puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_bolumu)
+        total_puan = None
+        if puan_bulucu:
+            try:
+                total_puan = float(puan_bulucu.group(1))
+            except ValueError:
+                total_puan = 5.0
+        else:
+            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_bolumu) if x != '10']
+            if puanlar:
+                total_puan = sum(puanlar) / len(puanlar)
+        
+        if total_puan is None:
+            total_puan = 5.0
+            
+        # Veritabanına kaydet
+        hafizaya_kaydet(hedef_tarih, f"[Ses Kaydı] {döküm_bolumu}", analiz_bolumu, total_puan)
+        
+        # Grafik oluştur ve gönder
+        grafik_yolu = grafik_olustur()
+        if grafik_yolu and os.path.exists(grafik_yolu):
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=open(grafik_yolu, 'rb'), caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
+        
+    finally:
+        # Geçici ses dosyasını temizle
+        if os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except Exception as file_err:
+                print(f"[Uyari]: Geçici ses dosyası silinemedi: {file_err}", file=sys.stderr)
+
+
 # --- 4. ANA ÇALIŞTIRICI SİSTEM ---
 if __name__ == "__main__":
     start_health_check_server()
@@ -372,6 +492,7 @@ if __name__ == "__main__":
     
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
+    app.add_handler(MessageHandler(filters.VOICE, ses_mesaj_yoneticisi))
     
     print("[Sistem]: Bot şu an canlı! Telegram'a gidip mesaj atabilirsin.")
     app.run_polling()
