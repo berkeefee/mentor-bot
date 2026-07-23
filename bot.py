@@ -286,12 +286,21 @@ async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Telegram'dan gelen her normal mesajı işler"""
     gelen_mesaj = update.message.text
+    msg_clean = gelen_mesaj.strip().lower().replace('i̇', 'i').replace('ı', 'i')
     
-    # --- GEÇMİŞ TARİH SORGULAMA (getir YYYY-MM-DD) ---
-    if gelen_mesaj.lower().startswith("getir"):
+    # --- GEÇMİŞ TARİH SORGULAMA (getir YYYY-MM-DD / getir bugün / getir dün) ---
+    if msg_clean.startswith("getir"):
         tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
         if tarih_bul:
             istenen_tarih = tarih_bul.group(0)
+        elif "bugun" in msg_clean:
+            istenen_tarih = datetime.now().strftime("%Y-%m-%d")
+        elif "dun" in msg_clean:
+            istenen_tarih = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            istenen_tarih = None
+
+        if istenen_tarih:
             kayit = spesifik_tarih_getir(istenen_tarih)
             if kayit:
                 girdi, analiz, total_puan = kayit
@@ -300,23 +309,47 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(f"❌ Hafızamda {istenen_tarih} tarihli bir kayıt bulamadım.")
         else:
-            await update.message.reply_text("💡 Doğru format: getir YYYY-MM-DD")
+            await update.message.reply_text("💡 Doğru format: `getir YYYY-MM-DD` veya `getir bugün` / `getir dün`")
         return
 
-    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD) ---
-    if gelen_mesaj.lower().startswith("sil"):
+    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD / sil bugün / sil dün / sil son) ---
+    if msg_clean.startswith("sil"):
         tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
         if tarih_bul:
             silinecek_tarih = tarih_bul.group(0)
+        elif "bugun" in msg_clean:
+            silinecek_tarih = datetime.now().strftime("%Y-%m-%d")
+        elif "dun" in msg_clean:
+            silinecek_tarih = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "son" in msg_clean:
+            conn = db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT tarih FROM gunluk_hafiza ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            conn.close()
+            silinecek_tarih = row[0] if row else None
+        else:
+            silinecek_tarih = None
+
+        if silinecek_tarih:
             conn = db_manager.get_connection()
             cursor = conn.cursor()
             p = db_manager.get_placeholder()
             cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (silinecek_tarih,))
             conn.commit()
             conn.close()
-            await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından başarıyla silindi!")
+            
+            grafik_yolu = grafik_olustur()
+            if grafik_yolu and os.path.exists(grafik_yolu):
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id, 
+                    photo=open(grafik_yolu, 'rb'), 
+                    caption=f"🗑️ **{silinecek_tarih}** tarihli kayıtlar silindi ve grafiğiniz güncellendi!"
+                )
+            else:
+                await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından başarıyla silindi!")
         else:
-            await update.message.reply_text("💡 Doğru format: sil YYYY-MM-DD")
+            await update.message.reply_text("💡 **Doğru Silme Formatları:**\n• `sil YYYY-MM-DD` (Örn: sil 2026-07-23)\n• `sil bugün` veya `sil dün`\n• `sil son` (En son eklenen kaydı siler)")
         return
 
     # --- NORMAL GÜNLÜK RAPOR GİRİŞİ ---
