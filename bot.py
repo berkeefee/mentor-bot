@@ -362,21 +362,23 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-        try:
-            response = client.models.generate_content(
-                model=primary_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-            )
-        except Exception as primary_error:
-            # 503 or rate limit fallback
-            fallback_model = "gemini-2.5-flash" if primary_model != "gemini-2.5-flash" else "gemini-1.5-flash"
-            print(f"[Model Uyari]: {primary_model} modeli hata verdi ({primary_error}). {fallback_model} modeline geciliyor...", file=sys.stderr)
-            response = client.models.generate_content(
-                model=fallback_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-            )
+        models_to_try = [primary_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+        response = None
+        last_error = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+                )
+                break
+            except Exception as err:
+                last_error = err
+                print(f"[Model Uyari]: {m} modeli hata verdi ({err}). Bir sonraki deneniyor...", file=sys.stderr)
+        
+        if not response:
+            raise Exception(f"Gemini modelleri yanıt veremedi: {last_error}")
         
         analiz_sonucu = response.text
         await update.message.reply_text(analiz_sonucu)
@@ -410,8 +412,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sesli mesajları indirir, transkribe eder ve Gemini ile analiz eder"""
-    ses = update.message.voice
+    """Sesli mesajları veya ses dosyalarını indirir, transkribe eder ve Gemini ile analiz eder"""
+    ses = update.message.voice or update.message.audio
     if not ses:
         return
         
@@ -421,7 +423,14 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
     await update.message.reply_text("🎙️ Ses kaydınız alındı. Transkripsiyon ve Gemini analizi başlatılıyor...")
     
-    audio_path = f"ses_kaydi_{update.message.message_id}.ogg"
+    # MIME türünü dinamik belirle
+    detected_mime = getattr(ses, "mime_type", None) or "audio/ogg"
+    ext = "ogg"
+    if "mp3" in detected_mime: ext = "mp3"
+    elif "wav" in detected_mime: ext = "wav"
+    elif "m4a" in detected_mime: ext = "m4a"
+    
+    audio_path = f"ses_kaydi_{update.message.message_id}.{ext}"
     
     try:
         # Ses dosyasını indir
@@ -429,8 +438,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         await file_obj.download_to_drive(audio_path)
         
         # Dosyayı Gemini Files API'ye yükle
-        print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path}")
-        media_file = client.files.upload(file=audio_path, config=types.UploadFileConfig(mime_type="audio/ogg"))
+        print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime})")
+        media_file = client.files.upload(file=audio_path, config=types.UploadFileConfig(mime_type=detected_mime))
         
         tarih_bugun = datetime.now().strftime("%Y-%m-%d")
         tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -450,20 +459,23 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         
         primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-        try:
-            response = client.models.generate_content(
-                model=primary_model,
-                contents=[media_file, prompt],
-                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-            )
-        except Exception as primary_error:
-            fallback_model = "gemini-2.5-flash" if primary_model != "gemini-2.5-flash" else "gemini-1.5-flash"
-            print(f"[Model Uyari]: {primary_model} ses analizi hatası ({primary_error}). {fallback_model} modeline geçiliyor...", file=sys.stderr)
-            response = client.models.generate_content(
-                model=fallback_model,
-                contents=[media_file, prompt],
-                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-            )
+        models_to_try = [primary_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+        response = None
+        last_error = None
+        for m in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=m,
+                    contents=[media_file, prompt],
+                    config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+                )
+                break
+            except Exception as err:
+                last_error = err
+                print(f"[Model Uyari]: {m} ses analizi hatası ({err}). Bir sonraki deneniyor...", file=sys.stderr)
+        
+        if not response:
+            raise Exception(f"Gemini modelleri yanıt veremedi: {last_error}")
             
         full_text = response.text
         
@@ -502,7 +514,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             except ValueError:
                 total_puan = 5.0
         else:
-            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_bolumu) if x != '10']
+            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_sonucu) if x != '10']
             if puanlar:
                 total_puan = sum(puanlar) / len(puanlar)
         
@@ -541,7 +553,7 @@ if __name__ == "__main__":
     
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
-    app.add_handler(MessageHandler(filters.VOICE, ses_mesaj_yoneticisi))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, ses_mesaj_yoneticisi))
     
     print("[Sistem]: Bot şu an canlı! Telegram'a gidip mesaj atabilirsin.")
     app.run_polling()
