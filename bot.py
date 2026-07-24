@@ -514,7 +514,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             except ValueError:
                 total_puan = 5.0
         else:
-            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_sonucu) if x != '10']
+            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_bolumu) if x != '10']
             if puanlar:
                 total_puan = sum(puanlar) / len(puanlar)
         
