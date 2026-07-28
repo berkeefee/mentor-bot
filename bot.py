@@ -66,7 +66,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not GEMINI_KEY or not TELEGRAM_TOKEN:
     print("[Hata]: GEMINI_KEY veya TELEGRAM_TOKEN cevre degiskeni eksik! Lutfen ayarlayin.", file=sys.stderr)
 
-client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+client = genai.Client(api_key=GEMINI_KEY, http_options=types.HttpOptions(timeout=180000)) if GEMINI_KEY else None
 DB_FILE = os.environ.get("DATABASE_PATH", "ajan_hafiza.db")
 
 
@@ -434,7 +434,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         # Ses dosyasını indir
-        file_obj = await ses.get_file()
+        file_obj = await ses.get_file(read_timeout=120, write_timeout=120, connect_timeout=60)
         await file_obj.download_to_drive(audio_path)
         
         # Dosyayı Gemini Files API'ye yükle
@@ -549,7 +549,7 @@ if __name__ == "__main__":
     print("  🚀 Ajan Canlıya Geçiyor, Telegram'a Bağlanıyor!       ")
     print("=======================================================")
     
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).read_timeout(120).write_timeout(120).connect_timeout(60).get_updates_read_timeout(120).build()
     
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
