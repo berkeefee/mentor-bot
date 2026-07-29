@@ -361,8 +361,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = f"Hedeflenen Kayıt Tarihi: {hedef_tarih}\nKullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\nGeçmiş Performanslar:\n{gecmis_konsept}\n\nAnaliz et, karne üret."
     
     try:
-        primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-        models_to_try = [primary_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+        primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
         response = None
         last_error = None
         for m in models_to_try:
@@ -370,7 +370,11 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response = client.models.generate_content(
                     model=m,
                     contents=prompt,
-                    config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction, 
+                        temperature=0.2,
+                        http_options=types.HttpOptions(timeout=180000)
+                    )
                 )
                 break
             except Exception as err:
@@ -439,7 +443,13 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Dosyayı Gemini Files API'ye yükle
         print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime})")
-        media_file = client.files.upload(file=audio_path, config=types.UploadFileConfig(mime_type=detected_mime))
+        media_file = client.files.upload(
+            file=audio_path, 
+            config=types.UploadFileConfig(
+                mime_type=detected_mime, 
+                http_options=types.HttpOptions(timeout=180000)
+            )
+        )
         
         tarih_bugun = datetime.now().strftime("%Y-%m-%d")
         tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -458,8 +468,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             f"ANALİZ:\n[Standart günlük mentor analiziniz ve karneniz]\n"
         )
         
-        primary_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-        models_to_try = [primary_model, "gemini-2.5-flash", "gemini-2.0-flash"]
+        primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
         response = None
         last_error = None
         for m in models_to_try:
@@ -467,7 +477,11 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
                 response = client.models.generate_content(
                     model=m,
                     contents=[media_file, prompt],
-                    config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction, 
+                        temperature=0.2,
+                        http_options=types.HttpOptions(timeout=180000)
+                    )
                 )
                 break
             except Exception as err:
