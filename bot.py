@@ -79,7 +79,7 @@ class DatabaseManager:
     def get_connection(self):
         if self.is_postgres:
             import psycopg2
-            return psycopg2.connect(self.db_url)
+            return psycopg2.connect(self.db_url, connect_timeout=10)
         else:
             return sqlite3.connect(DB_FILE)
 
@@ -91,30 +91,33 @@ class DatabaseManager:
         if not self.is_postgres and db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
             
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        if self.is_postgres:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS gunluk_hafiza (
-                    id SERIAL PRIMARY KEY,
-                    tarih VARCHAR(50),
-                    girdi TEXT,
-                    analiz TEXT,
-                    total_puan REAL
-                )
-            """)
-        else:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS gunluk_hafiza (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tarih TEXT,
-                    girdi TEXT,
-                    analiz TEXT,
-                    total_puan REAL
-                )
-            """)
-        conn.commit()
-        conn.close()
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.is_postgres:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS gunluk_hafiza (
+                        id SERIAL PRIMARY KEY,
+                        tarih VARCHAR(50),
+                        girdi TEXT,
+                        analiz TEXT,
+                        total_puan REAL
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS gunluk_hafiza (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tarih TEXT,
+                        girdi TEXT,
+                        analiz TEXT,
+                        total_puan REAL
+                    )
+                """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[Veritabani Hata]: veritabanini_hazirla basarisiz: {e}", file=sys.stderr)
 
 db_manager = DatabaseManager()
 
@@ -122,52 +125,67 @@ def veritabanini_hazirla():
     db_manager.veritabanini_hazirla()
 
 def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total_puan: float):
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
-    p = db_manager.get_placeholder()
-    cursor.execute(
-        f"INSERT INTO gunluk_hafiza (tarih, girdi, analiz, total_puan) VALUES ({p}, {p}, {p}, {p})",
-        (belirlenen_tarih, metin, analiz_sonucu, total_puan)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        p = db_manager.get_placeholder()
+        cursor.execute(
+            f"INSERT INTO gunluk_hafiza (tarih, girdi, analiz, total_puan) VALUES ({p}, {p}, {p}, {p})",
+            (belirlenen_tarih, metin, analiz_sonucu, total_puan)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Veritabani Hata]: hafizaya_kaydet basarisiz: {e}", file=sys.stderr)
 
 def son_kayitlari_getir(limit=5) -> str:
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT tarih, girdi, analiz FROM gunluk_hafiza ORDER BY tarih ASC LIMIT {int(limit)}")
-    rows = cursor.fetchall()
-    conn.close()
-    if not rows: return "Henüz geçmiş kayıt bulunmuyor."
-    
-    hafiza_metni = ""
-    for row in rows:
-        hafiza_metni += f"--- Kayıt Tarihi: {row[0]} ---\nGirdi: {row[1]}\nAnaliz: {row[2]}\n\n"
-    return hafiza_metni
+    try:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT tarih, girdi, analiz FROM gunluk_hafiza ORDER BY tarih ASC LIMIT {int(limit)}")
+        rows = cursor.fetchall()
+        conn.close()
+        if not rows: return "Henüz geçmiş kayıt bulunmuyor."
+        
+        hafiza_metni = ""
+        for row in rows:
+            hafiza_metni += f"--- Kayıt Tarihi: {row[0]} ---\nGirdi: {row[1]}\nAnaliz: {row[2]}\n\n"
+        return hafiza_metni
+    except Exception as e:
+        print(f"[Veritabani Uyari]: son_kayitlari_getir hatası: {e}", file=sys.stderr)
+        return "Geçmiş kayıtlar geçici olarak yüklenemedi."
 
 def spesifik_tarih_getir(hedef_tarih: str):
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
-    p = db_manager.get_placeholder()
-    cursor.execute(f"SELECT girdi, analiz, total_puan FROM gunluk_hafiza WHERE tarih = {p}", (hedef_tarih,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+    try:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        p = db_manager.get_placeholder()
+        cursor.execute(f"SELECT girdi, analiz, total_puan FROM gunluk_hafiza WHERE tarih = {p}", (hedef_tarih,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        print(f"[Veritabani Hata]: spesifik_tarih_getir basarisiz: {e}", file=sys.stderr)
+        return None
 
 def grafik_olustur():
     import matplotlib.dates as mdates
     
-    conn = db_manager.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT tarih, AVG(total_puan) 
-        FROM gunluk_hafiza 
-        WHERE total_puan IS NOT NULL 
-        GROUP BY tarih 
-        ORDER BY tarih ASC
-    """)
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT tarih, AVG(total_puan) 
+            FROM gunluk_hafiza 
+            WHERE total_puan IS NOT NULL 
+            GROUP BY tarih 
+            ORDER BY tarih ASC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"[Veritabani Hata]: grafik_olustur DB hatasi: {e}", file=sys.stderr)
+        return False
     
     if len(rows) < 1: return False
         
@@ -355,12 +373,11 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- NORMAL GÜNLÜK RAPOR GİRİŞİ ---
     await update.message.reply_text("⚡ Verileriniz işleniyor, Gemini analizi başlatıldı...")
     
-    hedef_tarih, temiz_girdi = tarih_ayıkla(gelen_mesaj)
-    gecmis_konsept = son_kayitlari_getir(limit=5)
-    
-    prompt = f"Hedeflenen Kayıt Tarihi: {hedef_tarih}\nKullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\nGeçmiş Performanslar:\n{gecmis_konsept}\n\nAnaliz et, karne üret."
-    
     try:
+        hedef_tarih, temiz_girdi = tarih_ayıkla(gelen_mesaj)
+        gecmis_konsept = son_kayitlari_getir(limit=5)
+        
+        prompt = f"Hedeflenen Kayıt Tarihi: {hedef_tarih}\nKullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\nGeçmiş Performanslar:\n{gecmis_konsept}\n\nAnaliz et, karne üret."
         primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
         response = None
