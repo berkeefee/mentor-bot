@@ -367,7 +367,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_error = None
         for m in models_to_try:
             try:
-                response = client.models.generate_content(
+                response = await client.aio.models.generate_content(
                     model=m,
                     contents=prompt,
                     config=types.GenerateContentConfig(
@@ -441,9 +441,9 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         file_obj = await ses.get_file(read_timeout=120, write_timeout=120, connect_timeout=60)
         await file_obj.download_to_drive(audio_path)
         
-        # Dosyayı Gemini Files API'ye yükle
+        # Dosyayı Gemini Files API'ye yükle (asenkron non-blocking)
         print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime})")
-        media_file = client.files.upload(
+        media_file = await client.aio.files.upload(
             file=audio_path, 
             config=types.UploadFileConfig(
                 mime_type=detected_mime, 
@@ -474,7 +474,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         last_error = None
         for m in models_to_try:
             try:
-                response = client.models.generate_content(
+                response = await client.aio.models.generate_content(
                     model=m,
                     contents=[media_file, prompt],
                     config=types.GenerateContentConfig(
@@ -495,7 +495,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Gemini Files API'den dosyayı temizle
         try:
-            client.files.delete(name=media_file.name)
+            await client.aio.files.delete(name=media_file.name)
         except Exception as file_del_err:
             print(f"[Uyari]: Gemini Files silinemedi: {file_del_err}", file=sys.stderr)
             
