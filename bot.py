@@ -78,23 +78,23 @@ class DatabaseManager:
 
     def get_connection(self):
         if self.is_postgres:
-            import psycopg2
-            return psycopg2.connect(self.db_url, connect_timeout=10)
-        else:
-            return sqlite3.connect(DB_FILE)
-
-    def get_placeholder(self):
-        return "%s" if self.is_postgres else "?"
+            try:
+                import psycopg2
+                conn = psycopg2.connect(self.db_url, connect_timeout=3)
+                return conn, "%s"
+            except Exception as e:
+                print(f"[Veritabani Uyari]: Supabase/PostgreSQL baglantisi kurulamadi ({e}). Yerel SQLite'a geciliyor...", file=sys.stderr)
+        
+        db_dir = os.path.dirname(DB_FILE)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        return sqlite3.connect(DB_FILE), "?"
 
     def veritabanini_hazirla(self):
-        db_dir = os.path.dirname(DB_FILE)
-        if not self.is_postgres and db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
-            
         try:
-            conn = self.get_connection()
+            conn, p = self.get_connection()
             cursor = conn.cursor()
-            if self.is_postgres:
+            if p == "%s":
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS gunluk_hafiza (
                         id SERIAL PRIMARY KEY,
@@ -126,9 +126,8 @@ def veritabanini_hazirla():
 
 def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total_puan: float):
     try:
-        conn = db_manager.get_connection()
+        conn, p = db_manager.get_connection()
         cursor = conn.cursor()
-        p = db_manager.get_placeholder()
         cursor.execute(
             f"INSERT INTO gunluk_hafiza (tarih, girdi, analiz, total_puan) VALUES ({p}, {p}, {p}, {p})",
             (belirlenen_tarih, metin, analiz_sonucu, total_puan)
@@ -140,7 +139,7 @@ def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total
 
 def son_kayitlari_getir(limit=5) -> str:
     try:
-        conn = db_manager.get_connection()
+        conn, _ = db_manager.get_connection()
         cursor = conn.cursor()
         cursor.execute(f"SELECT tarih, girdi, analiz FROM gunluk_hafiza ORDER BY tarih ASC LIMIT {int(limit)}")
         rows = cursor.fetchall()
@@ -157,9 +156,8 @@ def son_kayitlari_getir(limit=5) -> str:
 
 def spesifik_tarih_getir(hedef_tarih: str):
     try:
-        conn = db_manager.get_connection()
+        conn, p = db_manager.get_connection()
         cursor = conn.cursor()
-        p = db_manager.get_placeholder()
         cursor.execute(f"SELECT girdi, analiz, total_puan FROM gunluk_hafiza WHERE tarih = {p}", (hedef_tarih,))
         row = cursor.fetchone()
         conn.close()
@@ -172,7 +170,7 @@ def grafik_olustur():
     import matplotlib.dates as mdates
     
     try:
-        conn = db_manager.get_connection()
+        conn, _ = db_manager.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT tarih, AVG(total_puan) 
@@ -340,22 +338,27 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif "dun" in msg_clean:
             silinecek_tarih = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         elif "son" in msg_clean:
-            conn = db_manager.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT tarih FROM gunluk_hafiza ORDER BY id DESC LIMIT 1")
-            row = cursor.fetchone()
-            conn.close()
-            silinecek_tarih = row[0] if row else None
+            try:
+                conn, _ = db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT tarih FROM gunluk_hafiza ORDER BY id DESC LIMIT 1")
+                row = cursor.fetchone()
+                conn.close()
+                silinecek_tarih = row[0] if row else None
+            except Exception as e:
+                silinecek_tarih = None
         else:
             silinecek_tarih = None
 
         if silinecek_tarih:
-            conn = db_manager.get_connection()
-            cursor = conn.cursor()
-            p = db_manager.get_placeholder()
-            cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (silinecek_tarih,))
-            conn.commit()
-            conn.close()
+            try:
+                conn, p = db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (silinecek_tarih,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"[Veritabani Hata]: sil komutu basarisiz: {e}", file=sys.stderr)
             
             grafik_yolu = grafik_olustur()
             if grafik_yolu and os.path.exists(grafik_yolu):
