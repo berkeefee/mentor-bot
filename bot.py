@@ -430,6 +430,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
             await context.bot.send_photo(chat_id=update.effective_chat.id, photo=open(grafik_yolu, 'rb'), caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!")
+        else:
+            await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
         await update.message.reply_text(f"❌ Analiz sırasında bir hata oluştu: {str(e)}")
@@ -562,6 +564,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
             await context.bot.send_photo(chat_id=update.effective_chat.id, photo=open(grafik_yolu, 'rb'), caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!")
+        else:
+            await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
