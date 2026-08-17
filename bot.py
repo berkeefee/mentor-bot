@@ -362,11 +362,16 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             grafik_yolu = grafik_olustur()
             if grafik_yolu and os.path.exists(grafik_yolu):
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id, 
-                    photo=open(grafik_yolu, 'rb'), 
-                    caption=f"🗑️ **{silinecek_tarih}** tarihli kayıtlar silindi ve grafiğiniz güncellendi!"
-                )
+                try:
+                    with open(grafik_yolu, 'rb') as photo_file:
+                        await context.bot.send_photo(
+                            chat_id=update.effective_chat.id, 
+                            photo=photo_file, 
+                            caption=f"🗑️ **{silinecek_tarih}** tarihli kayıtlar silindi ve grafiğiniz güncellendi!"
+                        )
+                except Exception as photo_err:
+                    print(f"[Grafik Hata]: sil photo hatasi: {photo_err}", file=sys.stderr)
+                    await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından silindi!")
             else:
                 await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından başarıyla silindi!")
         else:
@@ -429,7 +434,16 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Grafik oluştur ve gönder
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=open(grafik_yolu, 'rb'), caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!")
+            try:
+                with open(grafik_yolu, 'rb') as photo_file:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id, 
+                        photo=photo_file, 
+                        caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!"
+                    )
+            except Exception as photo_err:
+                print(f"[Grafik Hata]: send_photo hatasi: {photo_err}", file=sys.stderr)
+                await update.message.reply_text(f"📊 Grafiğiniz oluşturuldu ancak gönderilirken aksaklık oluştu: {photo_err}")
         else:
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
@@ -563,7 +577,16 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         # Grafik oluştur ve gönder
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=open(grafik_yolu, 'rb'), caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!")
+            try:
+                with open(grafik_yolu, 'rb') as photo_file:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id, 
+                        photo=photo_file, 
+                        caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!"
+                    )
+            except Exception as photo_err:
+                print(f"[Grafik Hata]: send_photo hatasi: {photo_err}", file=sys.stderr)
+                await update.message.reply_text(f"📊 Grafiğiniz oluşturuldu ancak gönderilirken aksaklık oluştu: {photo_err}")
         else:
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
