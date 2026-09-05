@@ -22,31 +22,39 @@ import matplotlib.pyplot as plt
 # --- GOOGLE VE TELEGRAM KÜTÜPHANELERİ ---
 from google import genai
 from google.genai import types
+import asyncio
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- PORT BINDING FOR CLOUD HEALTH CHECKS (Render/Railway) ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
+main_event_loop = None
+telegram_app = None
+
+# --- PORT BINDING FOR CLOUD HEALTH CHECKS & WEBHOOKS (Render/Railway) ---
+class CloudServerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Bot is running.")
+        self.wfile.write(b"200 Bot is running.")
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8')
+            if body and telegram_app and main_event_loop:
+                data = json.loads(body)
+                update = Update.de_json(data, telegram_app.bot)
+                asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), main_event_loop)
+            self.send_response(200)
+            self.end_headers()
+        except Exception as e:
+            print(f"[Webhook Hata]: POST istegi islenirken hata: {e}", file=sys.stderr)
+            self.send_response(200)
+            self.end_headers()
 
     def log_message(self, format, *args):
-        # Mute health check request logging to keep console clean
         return
-
-def start_health_check_server():
-    port = int(os.environ.get("PORT", 0))
-    if port:
-        try:
-            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            print(f"[Sistem]: Health check server started on port {port}")
-        except Exception as e:
-            print(f"[Hata]: Health check server baslatilamadi: {e}", file=sys.stderr)
 
 # --- KİMLİK DOĞRULAMALARI ---
 # Yerel çalıştırmalar için .env dosyası varsa yükle
@@ -604,17 +612,43 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- 4. ANA ÇALIŞTIRICI SİSTEM ---
 if __name__ == "__main__":
-    start_health_check_server()
     veritabanini_hazirla()
-    print("=======================================================")
-    print("  🚀 Ajan Canlıya Geçiyor, Telegram'a Bağlanıyor!       ")
-    print("=======================================================")
+    port = int(os.environ.get("PORT", 0))
     
     app = Application.builder().token(TELEGRAM_TOKEN).read_timeout(120).write_timeout(120).connect_timeout(60).get_updates_read_timeout(120).build()
-    
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, ses_mesaj_yoneticisi))
     
-    print("[Sistem]: Bot şu an canlı! Telegram'a gidip mesaj atabilirsin.")
-    app.run_polling()
+    telegram_app = app
+    
+    if port:
+        print("=======================================================")
+        print(f"  🚀 BULUT ORTAMI: Webhook Modu Aktif (Port {port})     ")
+        print("=======================================================")
+        
+        main_event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(main_event_loop)
+        main_event_loop.run_until_complete(app.initialize())
+        main_event_loop.run_until_complete(app.start())
+        
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mentor-bot-vpgw.onrender.com")
+        webhook_target = f"{render_url.rstrip('/')}/"
+        main_event_loop.run_until_complete(app.bot.set_webhook(url=webhook_target, drop_pending_updates=False))
+        print(f"[Sistem]: Telegram Webhook kuruldu: {webhook_target}")
+        
+        server = HTTPServer(("0.0.0.0", port), CloudServerHandler)
+        print(f"[Sistem]: HTTP Server port {port} üzerinde dinliyor...")
+        
+        loop_thread = threading.Thread(target=main_event_loop.run_forever, daemon=True)
+        loop_thread.start()
+        
+        try:
+            server.serve_forever()
+        except (KeyboardInterrupt, SystemExit):
+            pass
+    else:
+        print("=======================================================")
+        print("  🚀 YEREL ORTAM: Polling Modu Başlatılıyor...          ")
+        print("=======================================================")
+        app.run_polling()
