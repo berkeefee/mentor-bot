@@ -4,10 +4,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Local database files
-*.db
-*.db-journal
-
 # Local logs
 *.log
 vbs_debug.txt
