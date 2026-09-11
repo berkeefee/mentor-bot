@@ -295,6 +295,32 @@ KRİTİK TALİMATLAR:
 """
 
 
+async def send_long_message(update: Update, text: str, max_length: int = 4000):
+    """Splits long text into multiple Telegram messages if it exceeds max_length"""
+    if not text:
+        return
+    if len(text) <= max_length:
+        await update.message.reply_text(text)
+        return
+
+    chunks = []
+    current_chunk = ""
+    for line in text.splitlines(keepends=True):
+        if len(current_chunk) + len(line) <= max_length:
+            current_chunk += line
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = line
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    for chunk in chunks:
+        if chunk.strip():
+            await update.message.reply_text(chunk)
+
+
 # --- 3. TELEGRAM MESAJ YÖNETİMİ ---
 async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start komutu verildiğinde çalışır"""
@@ -329,7 +355,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if kayit:
                 girdi, analiz, total_puan = kayit
                 yanit = f"📅 **TARİH:** {istenen_tarih}\n**Sizin Notunuz:** '{girdi}'\n\n{analiz}\n\n🔢 **NET SKOR:** {total_puan}/10"
-                await update.message.reply_text(yanit)
+                await send_long_message(update, yanit)
             else:
                 await update.message.reply_text(f"❌ Hafızamda {istenen_tarih} tarihli bir kayıt bulamadım.")
         else:
@@ -418,7 +444,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise Exception(f"Gemini modelleri yanıt veremedi: {last_error}")
         
         analiz_sonucu = response.text
-        await update.message.reply_text(analiz_sonucu)
+        await send_long_message(update, analiz_sonucu)
         
         # Puan ayıklama ve veritabanı kaydı
         puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_sonucu)
@@ -560,8 +586,12 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             döküm_bolumu = "Döküm ayıklanamadı."
             analiz_bolumu = full_text
             
-        # Kullanıcıya yanıtı gönder
-        await update.message.reply_text(f"✍️ **SES DÖKÜMÜ ({hedef_tarih}):**\n\"{döküm_bolumu}\"\n\n{analiz_bolumu}")
+        # Kullanıcıya yanıtı gönder (Döküm ve Analizi ayrı ayrı güvenle parçala)
+        if döküm_bolumu and döküm_bolumu != "Döküm ayıklanamadı.":
+            await send_long_message(update, f"✍️ **SES DÖKÜMÜ ({hedef_tarih}):**\n\"{döküm_bolumu}\"")
+            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ:**\n{analiz_bolumu}")
+        else:
+            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ ({hedef_tarih}):**\n{analiz_bolumu}")
         
         # Puan ayıkla
         puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_bolumu)
