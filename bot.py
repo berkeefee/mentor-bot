@@ -175,8 +175,6 @@ def spesifik_tarih_getir(hedef_tarih: str):
         return None
 
 def grafik_olustur():
-    import matplotlib.dates as mdates
-    
     try:
         conn, _ = db_manager.get_connection()
         cursor = conn.cursor()
@@ -193,58 +191,68 @@ def grafik_olustur():
         print(f"[Veritabani Hata]: grafik_olustur DB hatasi: {e}", file=sys.stderr)
         return False
     
-    if len(rows) < 1: return False
+    if len(rows) < 1:
+        return False
         
-    tarihler = []
+    tarih_str_list = []
     puanlar = []
     for row in rows:
         try:
-            date_obj = datetime.strptime(row[0], "%Y-%m-%d")
-            tarihler.append(date_obj)
+            date_obj = datetime.strptime(row[0].strip(), "%Y-%m-%d")
+            tarih_str_list.append(date_obj.strftime("%d.%m"))
             puanlar.append(round(float(row[1]), 2) if row[1] is not None else 0.0)
-        except ValueError:
+        except (ValueError, TypeError, AttributeError):
             continue
             
-    if not tarihler: return False
+    if not puanlar:
+        return False
     
-    # Set the style to dark background
+    x_indices = list(range(len(puanlar)))
+    
     plt.style.use('dark_background')
-    
-    fig, ax = plt.subplots(figsize=(10, 5), facecolor='#121214')
+    fig, ax = plt.subplots(figsize=(11, 5.5), facecolor='#121214')
     ax.set_facecolor('#18181c')
     
-    # Plot the line with a glowing emerald color and thick lines
-    ax.plot(tarihler, puanlar, marker='o', markersize=8, markerfacecolor='#ffffff', 
-            markeredgecolor='#10b981', markeredgewidth=2.5, color='#10b981', 
-            linewidth=3.5, label='Performans Trendi')
+    # 1. Tüm geçmiş çizgisi (Yeşil zemin & çizgi)
+    ax.plot(x_indices, puanlar, marker='o', markersize=6, markerfacecolor='#ffffff', 
+            markeredgecolor='#10b981', markeredgewidth=2, color='#10b981', 
+            linewidth=2.5, label='Genel Performans Trendi')
             
-    # Fill the area under the curve with a transparent emerald shade
-    ax.fill_between(tarihler, puanlar, color='#10b981', alpha=0.12)
-    
-    # Grid lines configuration
+    # 2. Son güncel verileri vurgula (Vurgulu Turkuaz Çizgi & Büyük Noktalar)
+    recent_count = min(5, len(puanlar))
+    ax.plot(x_indices[-recent_count:], puanlar[-recent_count:], marker='o', markersize=9, 
+            markerfacecolor='#06b6d4', markeredgecolor='#ffffff', markeredgewidth=2.5, 
+            color='#06b6d4', linewidth=3.5, label='Son Güncel Veriler')
+            
+    # Arka plan alan dolgusu
+    ax.fill_between(x_indices, puanlar, color='#10b981', alpha=0.12)
     ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
+    ax.tick_params(colors='#a1a1aa', labelsize=9)
     
-    # Ticks configuration
-    ax.tick_params(colors='#a1a1aa', labelsize=10)
+    # Son güncel noktaların üzerlerine sayısal puan etiketleri yaz
+    for i in range(len(puanlar) - recent_count, len(puanlar)):
+        ax.annotate(f'{puanlar[i]}', (x_indices[i], puanlar[i]), textcoords='offset points', 
+                    xytext=(0, 9), ha='center', fontsize=9.5, fontweight='bold', color='#38bdf8')
+                    
+    # X ekseni tarih etiketlerini akıllı yerleştir
+    step = max(1, len(x_indices) // 14)
+    tick_positions = x_indices[::step]
+    if x_indices[-1] not in tick_positions:
+        tick_positions.append(x_indices[-1])
+        
+    tick_labels = [tarih_str_list[i] for i in tick_positions]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=30, color='#e4e4e7')
     
-    # Format dates on x-axis to be clean and readable ("05.06")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    
-    # Title & Labels
-    ax.set_title('Gelişim ve Performans Trend Grafiği', color='#f4f4f5', fontsize=14, fontweight='bold', pad=20)
+    # Başlıklar ve Sınırlar
+    ax.set_title('Gelişim ve Performans Trend Grafiği (Güncel Detay Görünümü)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
     ax.set_ylabel('Puan (10 Üzerinden)', color='#a1a1aa', fontsize=11, labelpad=10)
-    ax.set_ylim(0, 10.5)
+    ax.set_ylim(0, 11)
     
-    # Remove outer spines for a borderless floating look
     for spine in ['top', 'right', 'left', 'bottom']:
         ax.spines[spine].set_visible(False)
         
-    # Rotate date labels
-    plt.xticks(rotation=30)
-    
-    # Custom styled legend
-    legend = ax.legend(facecolor='#18181c', edgecolor='#27272a', labelcolor='#e4e4e7')
+    legend = ax.legend(facecolor='#18181c', edgecolor='#27272a', labelcolor='#e4e4e7', loc='upper left')
     legend.get_frame().set_linewidth(1.0)
     
     plt.tight_layout()
