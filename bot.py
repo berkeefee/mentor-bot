@@ -214,22 +214,22 @@ def grafik_olustur():
     ax.set_facecolor('#18181c')
     
     # 1. Tüm geçmiş çizgisi (Yeşil zemin & çizgi)
-    ax.plot(x_indices, puanlar, marker='o', markersize=6, markerfacecolor='#ffffff', 
-            markeredgecolor='#10b981', markeredgewidth=2, color='#10b981', 
-            linewidth=2.5, label='Genel Performans Trendi')
+    ax.plot(x_indices, puanlar, marker='o', markersize=5, markerfacecolor='#ffffff', 
+            markeredgecolor='#10b981', markeredgewidth=1.5, color='#10b981', 
+            linewidth=2.2, label='Geçmiş Performans Trendi')
             
-    # 2. Son güncel verileri vurgula (Vurgulu Turkuaz Çizgi & Büyük Noktalar)
-    recent_count = min(5, len(puanlar))
-    ax.plot(x_indices[-recent_count:], puanlar[-recent_count:], marker='o', markersize=9, 
-            markerfacecolor='#06b6d4', markeredgecolor='#ffffff', markeredgewidth=2.5, 
-            color='#06b6d4', linewidth=3.5, label='Son Güncel Veriler')
+    # 2. Son 10 güncel veriyi vurgula (Vurgulu Turkuaz Çizgi & Büyük Noktalar)
+    recent_count = min(10, len(puanlar))
+    ax.plot(x_indices[-recent_count:], puanlar[-recent_count:], marker='o', markersize=8.5, 
+            markerfacecolor='#06b6d4', markeredgecolor='#ffffff', markeredgewidth=2.2, 
+            color='#06b6d4', linewidth=3.2, label='Son 10 Günlük Güncel Veriler')
             
     # Arka plan alan dolgusu
-    ax.fill_between(x_indices, puanlar, color='#10b981', alpha=0.12)
+    ax.fill_between(x_indices, puanlar, color='#10b981', alpha=0.10)
     ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
     ax.tick_params(colors='#a1a1aa', labelsize=9)
     
-    # Son güncel noktaların üzerlerine sayısal puan etiketleri yaz
+    # YALNIZCA SON 10 GÜNCEL NOKTANIN ÜZERİNE SAYISAL MAVİ PUAN ETİKETLERİNİ YAZ
     for i in range(len(puanlar) - recent_count, len(puanlar)):
         ax.annotate(f'{puanlar[i]}', (x_indices[i], puanlar[i]), textcoords='offset points', 
                     xytext=(0, 9), ha='center', fontsize=9.5, fontweight='bold', color='#38bdf8')
@@ -245,7 +245,7 @@ def grafik_olustur():
     ax.set_xticklabels(tick_labels, rotation=30, color='#e4e4e7')
     
     # Başlıklar ve Sınırlar
-    ax.set_title('Gelişim ve Performans Trend Grafiği (Güncel Detay Görünümü)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
+    ax.set_title('Gelişim ve Performans Trend Grafiği (Son 10 Gün Detaylı Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
     ax.set_ylabel('Puan (10 Üzerinden)', color='#a1a1aa', fontsize=11, labelpad=10)
     ax.set_ylim(0, 11)
     
