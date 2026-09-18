@@ -269,9 +269,34 @@ def grafik_olustur():
 
 def tarih_ayıkla(metin: str):
     temiz_metin = metin.strip()
-    tarih_deseni = re.match(r"^\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
-    if tarih_deseni:
-        return tarih_deseni.group(1), temiz_metin[tarih_deseni.end():].strip()
+    
+    # 1. Format: YYYY-MM-DD veya [YYYY-MM-DD]
+    m1 = re.match(r"^\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
+    if m1:
+        return m1.group(1), temiz_metin[m1.end():].strip()
+        
+    # 2. Format: DD.MM, DD.MM.YYYY, DD/MM, DD/MM/YYYY veya [DD.MM.YYYY]
+    m2 = re.match(r"^\[?(\d{1,2})[\./](\d{1,2})(?:[\./](\d{4}))?\]?", temiz_metin)
+    if m2:
+        gun = int(m2.group(1))
+        ay = int(m2.group(2))
+        yil = int(m2.group(3)) if m2.group(3) else datetime.now(TR_TZ).year
+        return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin[m2.end():].strip()
+
+    # 3. Format: 16 eylul, 16 eylül 2026 vb.
+    aylar = {
+        "ocak": 1, "subat": 2, "mart": 3, "nisan": 4, "mayis": 5, "haziran": 6, 
+        "temmuz": 7, "agustos": 8, "eylul": 9, "ekim": 10, "kasim": 11, "aralik": 12
+    }
+    m3 = re.match(r"^\[?(\d{1,2})\s+([a-zA-ZğüşıöçĞÜŞİÖÇ]+)(?:\s+(\d{4}))?\]?", temiz_metin, re.IGNORECASE)
+    if m3:
+        gun = int(m3.group(1))
+        ay_str = m3.group(2).lower().replace("ı", "i").replace("ğ", "g").replace("ü", "u").replace("ş", "s").replace("ö", "o").replace("ç", "c")
+        if ay_str in aylar:
+            ay = aylar[ay_str]
+            yil = int(m3.group(3)) if m3.group(3) else datetime.now(TR_TZ).year
+            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin[m3.end():].strip()
+
     return datetime.now(TR_TZ).strftime("%Y-%m-%d"), temiz_metin
 
 
@@ -573,15 +598,16 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         prompt = (
             f"🚨 KRİTİK TARİH VE ZAMAN DİREKTİFİ:\n"
-            f"Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}, dün = {tarih_dun}.\n"
-            f"Geçmiş performanslar eski aylara (06 veya 07 - Haziran/Temmuz) ait olabilir.\n"
-            f"SABİT KURAL: Hedef tarihi KESİNLİKLE {tarih_bugun} (veya kullanıcı ses kaydında açıkça dün için konuşuyorsa {tarih_dun}) olarak belirle!\n"
-            f"ASLA ve KESİNLİKLE geçmiş kayıtlardaki 06 (Haziran) veya 07 (Temmuz) aylarını hedef tarih yapma!\n\n"
+            f"Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}, dün = {tarih_dun}.\n\n"
+            f"HEDEF TARİH SEÇİM HİYERARŞİSİ (ÇOK ÖNEMLİ!):\n"
+            f"1. **BİRİNCİL ÖNCELİK (Kullanıcının Sözlü Tarih İfadesi):** Eğer kullanıcı ses kaydında açıkça bir tarih veya gün söylediyse (Örn: '16 Eylül', '16.09', '14 Eylül', 'dün' vb.), hedef tarihi KESİNLİKLE kullanıcının kaydında söylediği o tarihe göre ayarla! (Örn: '16 Eylül' veya '16.09' dediyse KESİNLİKLE 'TARİH: 2026-09-16' yaz).\n"
+            f"2. **İKİNCİL ÖNCELİK (Göreceli İfadeler veya Tarih Belirtilmeme):** Kullanıcı 'dün' dediyse {tarih_dun}, 'bugün' dediyse veya hiç tarih söylemediyse {tarih_bugun} olarak belirle.\n"
+            f"3. **YASAK:** Aşağıdaki geçmiş kayıtlarda eski aylar (Haziran/Temmuz 06/07) var diye kullanıcının söylediği tarihi değiştirme veya eski ayları hedef tarih yapma!\n\n"
             f"Geçmiş Performanslar (Sadece referans gelişim kıyası içindir):\n{gecmis_konsept}\n\n"
             f"Görevlerin:\n"
             f"1. Ekteki ses kaydını dinle ve kelimesi kelimesine TÜRKÇE transkripsiyonunu (dökümünü) yap.\n"
-            f"2. Ses kaydında geçen ifadeleri analiz et. Eğer kullanıcı dün yaptıkları için konuşuyorsa hedef tarihi dünün tarihi ({tarih_dun}) olarak belirle. Aksi halde bugünün tarihi ({tarih_bugun}) olarak kabul et.\n"
-            f"3. Bu dökümü sanki kullanıcı metin yazmış gibi analiz edip karne üret.\n\n"
+            f"2. Ses kaydındaki tarihi analiz et. Kullanıcı açıkça bir tarih söylediyse (Örn: '16 Eylül', '16.09') hedef tarihi o tarihe çevir! (Örn: 2026-09-16).\n"
+            f"3. Bu dökümü analiz edip karne üret.\n\n"
             f"YANIT FORMATIN KESİNLİKLE ŞÖYLE OLMALIDIR:\n"
             f"TARİH: [Belirlenen hedef tarih, format: YYYY-MM-DD]\n"
             f"DÖKÜM:\n[Ses kaydının tam Türkçe dökümü]\n\n"
@@ -627,12 +653,13 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         tarih_bulucu = re.search(r"TARİH:\s*(\d{4}-\d{2}-\d{2})", full_text)
         if tarih_bulucu:
             extracted_date = tarih_bulucu.group(1)
-            # Eğer Gemini eski bir ayı (06 veya 07 - Haziran/Temmuz) çıkardıysa, güncel Türkiye tarihiyle düzelt!
-            if extracted_date.startswith("2026-07") or extracted_date.startswith("2026-06"):
+            # Eğer Gemini eski bir ayı (06 veya 07) çıkardıysa VE dökümde açıkça haziran/temmuz geçmiyorsa güncel Eylül tarihiyle düzelt:
+            if (extracted_date.startswith("2026-07") or extracted_date.startswith("2026-06")) and ("temmuz" not in full_text.lower() and "haziran" not in full_text.lower()):
                 print(f"[Sistem Uyarı]: Gemini eski ay ({extracted_date}) çıkardı, Türkiye tarihi ({tarih_bugun}) ile düzeltiliyor.", file=sys.stderr)
                 hedef_tarih = tarih_bugun
             else:
                 hedef_tarih = extracted_date
+
 
             
         if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
