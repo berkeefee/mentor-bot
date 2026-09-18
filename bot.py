@@ -267,7 +267,19 @@ def grafik_olustur():
     plt.close()
     return grafik_yolu
 
+def format_date_tr(date_str: str) -> str:
+    if not date_str: return ""
+    try:
+        parts = date_str.strip().split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+    except Exception:
+        pass
+    return date_str
+
 def tarih_ayıkla(metin: str):
+
+
     temiz_metin = metin.strip()
     
     # 1. Format: YYYY-MM-DD (e.g. 2026-09-16 veya [2026-09-16])
@@ -586,7 +598,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_photo(
                         chat_id=update.effective_chat.id, 
                         photo=photo_file, 
-                        caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!"
+                        caption=f"📊 **{format_date_tr(hedef_tarih)}** verisi grafiğe işlendi!"
                     )
             except Exception as photo_err:
                 print(f"[Grafik Hata]: send_photo hatasi: {photo_err}", file=sys.stderr)
@@ -673,11 +685,6 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         döküm_bolumu = ""
         analiz_bolumu = ""
         
-        # Yanıtı parçala
-        hedef_tarih = tarih_bugun
-        döküm_bolumu = ""
-        analiz_bolumu = ""
-        
         if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
             parts = full_text.split("ANALİZ:")
             döküm_bolumu = parts[0].replace("DÖKÜM:", "").strip()
@@ -705,13 +712,13 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             
         # Kullanıcıya yanıtı gönder (Döküm ve Analizi ayrı ayrı güvenle parçala)
         if döküm_bolumu and döküm_bolumu != "Döküm ayıklanamadı.":
-            await send_long_message(update, f"✍️ **SES DÖKÜMÜ ({hedef_tarih}):**\n\"{döküm_bolumu}\"")
+            await send_long_message(update, f"✍️ **SES DÖKÜMÜ ({format_date_tr(hedef_tarih)}):**\n\"{döküm_bolumu}\"")
             await send_long_message(update, f"🎯 **MENTÖR ANALİZİ:**\n{analiz_bolumu}")
         else:
-            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ ({hedef_tarih}):**\n{analiz_bolumu}")
+            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ ({format_date_tr(hedef_tarih)}):**\n{analiz_bolumu}")
         
         # Puan ayıkla
-        puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_bolumu)
+        puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_sonucu)
         total_puan = None
         if puan_bulucu:
             try:
@@ -719,7 +726,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             except ValueError:
                 total_puan = 5.0
         else:
-            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_bolumu) if x != '10']
+            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_sonucu) if x != '10']
             if puanlar:
                 total_puan = sum(puanlar) / len(puanlar)
         
@@ -737,7 +744,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
                     await context.bot.send_photo(
                         chat_id=update.effective_chat.id, 
                         photo=photo_file, 
-                        caption=f"📊 {hedef_tarih} verisi grafiğe işlendi!"
+                        caption=f"📊 **{format_date_tr(hedef_tarih)}** verisi grafiğe işlendi!"
                     )
             except Exception as photo_err:
                 print(f"[Grafik Hata]: send_photo hatasi: {photo_err}", file=sys.stderr)
@@ -746,6 +753,7 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
+
         await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
         
     finally:
