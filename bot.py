@@ -337,15 +337,38 @@ async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Gelişimini 6 alanda (Beslenme, Spor, Kişisel Gelişim, Finans, Sosyal, Yazılım) takip ediyorum.\n\n"
         "📥 **Veri Girişi İçin:** Doğrudan bugün ne yaptığını yazıp gönder.\n"
         "📅 **Geçmiş Gün İçin:** Metnin başına tarih koy. Örn: `[2026-06-01] Bugün yulaf yedim...`\n"
+        "📊 **Grafiğinizi İstediğiniz An Çağırmak İçin:** `grafik` veya `/grafik` yazıp gönderin.\n"
         "🔍 **Eski Raporu Çağırmak İçin:** `getir YYYY-MM-DD` yazıp gönder."
     )
     await update.message.reply_text(karşılama, parse_mode="Markdown")
+
+async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grafiği doğrudan talep edildiğinde oluşturup gönderir"""
+    grafik_yolu = grafik_olustur()
+    if grafik_yolu and os.path.exists(grafik_yolu):
+        try:
+            with open(grafik_yolu, 'rb') as photo_file:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id, 
+                    photo=photo_file, 
+                    caption="📊 **Güncel İlerleme ve Performans Trend Grafiğiniz!**"
+                )
+        except Exception as photo_err:
+            print(f"[Grafik Hata]: send_photo hatasi: {photo_err}", file=sys.stderr)
+            await update.message.reply_text(f"📊 Grafiğiniz oluşturuldu ancak gönderilirken bir aksaklık oldu: {photo_err}")
+    else:
+        await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
 
 async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Telegram'dan gelen her normal mesajı işler"""
     gelen_mesaj = update.message.text
     msg_clean = gelen_mesaj.strip().lower().replace('i̇', 'i').replace('ı', 'i')
     
+    # --- İSTEK ÜZERİNE GRAFİK ÇAĞIRMA (grafik / grafiği göster / grafik getir) ---
+    if msg_clean.startswith("grafik") or "grafik" in msg_clean:
+        await grafik_gonder_komutu(update, context)
+        return
+
     # --- GEÇMİŞ TARİH SORGULAMA (getir YYYY-MM-DD / getir bugün / getir dün) ---
     if msg_clean.startswith("getir"):
         tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
@@ -655,6 +678,7 @@ if __name__ == "__main__":
     
     app = Application.builder().token(TELEGRAM_TOKEN).read_timeout(120).write_timeout(120).connect_timeout(60).get_updates_read_timeout(120).build()
     app.add_handler(CommandHandler("start", start_komutu))
+    app.add_handler(CommandHandler("grafik", grafik_gonder_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, ses_mesaj_yoneticisi))
     
