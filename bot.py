@@ -270,34 +270,41 @@ def grafik_olustur():
 def tarih_ayıkla(metin: str):
     temiz_metin = metin.strip()
     
-    # 1. Format: YYYY-MM-DD veya [YYYY-MM-DD]
-    m1 = re.match(r"^\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
+    # 1. Format: YYYY-MM-DD (e.g. 2026-09-16 veya [2026-09-16])
+    m1 = re.search(r"\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
     if m1:
-        return m1.group(1), temiz_metin[m1.end():].strip()
+        return m1.group(1), temiz_metin.replace(m1.group(0), "").strip()
         
-    # 2. Format: DD.MM, DD.MM.YYYY, DD/MM, DD/MM/YYYY veya [DD.MM.YYYY]
-    m2 = re.match(r"^\[?(\d{1,2})[\./](\d{1,2})(?:[\./](\d{4}))?\]?", temiz_metin)
+    # 2. Format: DD.MM.YYYY, DD.MM, DD/MM/YYYY, DD/MM (e.g. 16.09, 16.09.2026, 16/09)
+    m2 = re.search(r"\[?(\d{1,2})[\./](\d{1,2})(?:[\./](\d{4}))?\]?", temiz_metin)
     if m2:
         gun = int(m2.group(1))
         ay = int(m2.group(2))
         yil = int(m2.group(3)) if m2.group(3) else datetime.now(TR_TZ).year
-        return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin[m2.end():].strip()
+        if 1 <= gun <= 31 and 1 <= ay <= 12:
+            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m2.group(0), "").strip()
 
-    # 3. Format: 16 eylul, 16 eylül 2026 vb.
+    # 3. Format: 16 eylül, 16 eylul 2026 vb.
     aylar = {
         "ocak": 1, "subat": 2, "mart": 3, "nisan": 4, "mayis": 5, "haziran": 6, 
         "temmuz": 7, "agustos": 8, "eylul": 9, "ekim": 10, "kasim": 11, "aralik": 12
     }
-    m3 = re.match(r"^\[?(\d{1,2})\s+([a-zA-ZğüşıöçĞÜŞİÖÇ]+)(?:\s+(\d{4}))?\]?", temiz_metin, re.IGNORECASE)
+    m3 = re.search(r"\[?(\d{1,2})\s+([a-zA-ZğüşıöçĞÜŞİÖÇ]+)(?:\s+(\d{4}))?\]?", temiz_metin)
     if m3:
         gun = int(m3.group(1))
         ay_str = m3.group(2).lower().replace("ı", "i").replace("ğ", "g").replace("ü", "u").replace("ş", "s").replace("ö", "o").replace("ç", "c")
-        if ay_str in aylar:
+        if ay_str in aylar and 1 <= gun <= 31:
             ay = aylar[ay_str]
             yil = int(m3.group(3)) if m3.group(3) else datetime.now(TR_TZ).year
-            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin[m3.end():].strip()
+            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m3.group(0), "").strip()
+
+    # 4. Göreceli Kelimeler: dün / dünün
+    if "dun" in temiz_metin.lower().replace("ü", "u"):
+        parsed = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        return parsed, temiz_metin
 
     return datetime.now(TR_TZ).strftime("%Y-%m-%d"), temiz_metin
+
 
 
 # --- 2. SİSTEM TALİMATI ---
@@ -666,25 +673,35 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         döküm_bolumu = ""
         analiz_bolumu = ""
         
-        tarih_bulucu = re.search(r"TARİH:\s*(\d{4}-\d{2}-\d{2})", full_text)
-        if tarih_bulucu:
-            extracted_date = tarih_bulucu.group(1)
-            # Eğer Gemini eski bir ayı (06 veya 07) çıkardıysa VE dökümde açıkça haziran/temmuz geçmiyorsa güncel Eylül tarihiyle düzelt:
-            if (extracted_date.startswith("2026-07") or extracted_date.startswith("2026-06")) and ("temmuz" not in full_text.lower() and "haziran" not in full_text.lower()):
-                print(f"[Sistem Uyarı]: Gemini eski ay ({extracted_date}) çıkardı, Türkiye tarihi ({tarih_bugun}) ile düzeltiliyor.", file=sys.stderr)
-                hedef_tarih = tarih_bugun
-            else:
-                hedef_tarih = extracted_date
-
-
-            
+        # Yanıtı parçala
+        hedef_tarih = tarih_bugun
+        döküm_bolumu = ""
+        analiz_bolumu = ""
+        
         if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
             parts = full_text.split("ANALİZ:")
-            döküm_bolumu = parts[0].replace("DÖKÜM:", "").replace(f"TARİH: {hedef_tarih}", "").strip()
+            döküm_bolumu = parts[0].replace("DÖKÜM:", "").strip()
             analiz_bolumu = parts[1].strip()
         else:
             döküm_bolumu = "Döküm ayıklanamadı."
             analiz_bolumu = full_text
+
+        # Tarih Belirleme Hiyerarşisi:
+        # 1. Öncelik: Transkripsiyon (Döküm) metninde kullanıcının bizzat söylediği bir tarih var mı?
+        sozlu_tarih, _ = tarih_ayıkla(döküm_bolumu)
+        tarih_bulucu = re.search(r"TARİH:\s*([^\n]+)", full_text)
+        
+        if sozlu_tarih and sozlu_tarih != tarih_bugun:
+            hedef_tarih = sozlu_tarih
+        elif tarih_bulucu:
+            raw_tarih = tarih_bulucu.group(1).strip()
+            parsed_date, _ = tarih_ayıkla(raw_tarih)
+            if parsed_date:
+                if (parsed_date.startswith("2026-07") or parsed_date.startswith("2026-06")) and ("temmuz" not in full_text.lower() and "haziran" not in full_text.lower()):
+                    hedef_tarih = tarih_bugun
+                else:
+                    hedef_tarih = parsed_date
+
             
         # Kullanıcıya yanıtı gönder (Döküm ve Analizi ayrı ayrı güvenle parçala)
         if döküm_bolumu and döküm_bolumu != "Döküm ayıklanamadı.":
