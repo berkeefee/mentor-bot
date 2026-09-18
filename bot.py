@@ -332,9 +332,57 @@ KRİTİK TALİMATLAR:
 * [Kritik 1-2 madde]
 """
 
+async def call_gemini_with_fallback(contents, system_instruction=None):
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    models_to_try = [
+        primary_model,
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-pro"
+    ]
+    seen = set()
+    unique_models = []
+    for m in models_to_try:
+        if m and m not in seen:
+            seen.add(m)
+            unique_models.append(m)
+
+    last_error = None
+    for model_name in unique_models:
+        for attempt in range(2):
+            try:
+                config = types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2,
+                    http_options=types.HttpOptions(timeout=180000)
+                ) if system_instruction else types.GenerateContentConfig(
+                    temperature=0.2,
+                    http_options=types.HttpOptions(timeout=180000)
+                )
+                
+                response = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                )
+                if response and response.text:
+                    return response
+            except Exception as err:
+                last_error = err
+                err_str = str(err).lower()
+                print(f"[Gemini Uyari]: Model '{model_name}' (deneme {attempt+1}) hata: {err}", file=sys.stderr)
+                if "503" in err_str or "unavailable" in err_str or "429" in err_str or "high demand" in err_str:
+                    await asyncio.sleep(2 * (attempt + 1))
+                else:
+                    break
+
+    raise Exception(f"Gemini sunucularındaki geçici yoğunluk (503 High Demand) nedeniyle yanıt alınamadı. Lütfen birkaç saniye sonra tekrar deneyin.")
+
 
 async def send_long_message(update: Update, text: str, max_length: int = 4000):
-    """Splits long text into multiple Telegram messages if it exceeds max_length"""
+    # Splits long text into multiple Telegram messages if it exceeds max_length
+
     if not text:
         return
     if len(text) <= max_length:
@@ -361,7 +409,7 @@ async def send_long_message(update: Update, text: str, max_length: int = 4000):
 
 # --- 3. TELEGRAM MESAJ YÖNETİMİ ---
 async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start komutu verildiğinde çalışır"""
+    # /start komutu verildiginde calisir
     karşılama = (
         "🎯 **Demir İrade Performans Ajanına Hoş Geldin!**\n\n"
         "Gelişimini 6 alanda (Beslenme, Spor, Kişisel Gelişim, Finans, Sosyal, Yazılım) takip ediyorum.\n\n"
@@ -373,7 +421,8 @@ async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(karşılama, parse_mode="Markdown")
 
 async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Grafiği doğrudan talep edildiğinde oluşturup gönderir"""
+    # Grafigi dogrudan talep edildiginde olusturup gonderir
+
     grafik_yolu = grafik_olustur()
     if grafik_yolu and os.path.exists(grafik_yolu):
         try:
@@ -390,7 +439,8 @@ async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
 
 async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Telegram'dan gelen her normal mesajı işler"""
+    # Telegram'dan gelen her normal mesaji isler
+
     gelen_mesaj = update.message.text
     msg_clean = gelen_mesaj.strip().lower().replace('i̇', 'i').replace('ı', 'i')
     
@@ -495,28 +545,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Analiz et, karne üret."
         )
 
-        primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
-        response = None
-        last_error = None
-        for m in models_to_try:
-            try:
-                response = await client.aio.models.generate_content(
-                    model=m,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction, 
-                        temperature=0.2,
-                        http_options=types.HttpOptions(timeout=180000)
-                    )
-                )
-                break
-            except Exception as err:
-                last_error = err
-                print(f"[Model Uyari]: {m} modeli hata verdi ({err}). Bir sonraki deneniyor...", file=sys.stderr)
-        
-        if not response:
-            raise Exception(f"Gemini modelleri yanıt veremedi: {last_error}")
+        response = await call_gemini_with_fallback(contents=prompt, system_instruction=system_instruction)
+
         
         analiz_sonucu = response.text
         await send_long_message(update, analiz_sonucu)
@@ -561,7 +591,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sesli mesajları veya ses dosyalarını indirir, transkribe eder ve Gemini ile analiz eder"""
+    # Sesli mesajlari veya ses dosyalarini indirir, transkribe eder ve Gemini ile analiz eder
+
     ses = update.message.voice or update.message.audio
     if not ses:
         return
@@ -618,28 +649,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             f"ANALİZ:\n[Standart günlük mentor analiziniz ve karneniz]\n"
         )
         
-        primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
-        response = None
-        last_error = None
-        for m in models_to_try:
-            try:
-                response = await client.aio.models.generate_content(
-                    model=m,
-                    contents=[media_file, prompt],
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction, 
-                        temperature=0.2,
-                        http_options=types.HttpOptions(timeout=180000)
-                    )
-                )
-                break
-            except Exception as err:
-                last_error = err
-                print(f"[Model Uyari]: {m} ses analizi hatası ({err}). Bir sonraki deneniyor...", file=sys.stderr)
-        
-        if not response:
-            raise Exception(f"Gemini modelleri yanıt veremedi: {last_error}")
+        response = await call_gemini_with_fallback(contents=[media_file, prompt], system_instruction=system_instruction)
+
             
         full_text = response.text
         
