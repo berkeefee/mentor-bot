@@ -333,14 +333,15 @@ KRİTİK TALİMATLAR:
 """
 
 async def call_gemini_with_fallback(contents, system_instruction=None):
-    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     models_to_try = [
         primary_model,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-pro"
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-flash-latest"
     ]
+
     seen = set()
     unique_models = []
     for m in models_to_try:
