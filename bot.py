@@ -423,16 +423,13 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("💡 Doğru format: `getir YYYY-MM-DD` veya `getir bugün` / `getir dün`")
         return
 
-    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD / sil bugün / sil dün / sil son) ---
+    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD / sil DD.MM / sil bugün / sil dün / sil son) ---
     if msg_clean.startswith("sil"):
-        tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
-        if tarih_bul:
-            silinecek_tarih = tarih_bul.group(0)
-        elif "bugun" in msg_clean:
-            silinecek_tarih = datetime.now(TR_TZ).strftime("%Y-%m-%d")
-        elif "dun" in msg_clean:
-            silinecek_tarih = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
-        elif "son" in msg_clean:
+        sil_arg = gelen_mesaj[3:].strip()
+        sil_clean = sil_arg.lower().replace('i̇', 'i').replace('ı', 'i')
+        
+        silinecek_tarih = None
+        if "son" in sil_clean:
             try:
                 conn, _ = db_manager.get_connection()
                 cursor = conn.cursor()
@@ -442,6 +439,13 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 silinecek_tarih = row[0] if row else None
             except Exception as e:
                 silinecek_tarih = None
+        elif "bugun" in sil_clean:
+            silinecek_tarih = datetime.now(TR_TZ).strftime("%Y-%m-%d")
+        elif "dun" in sil_clean:
+            silinecek_tarih = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+        elif sil_arg:
+            parsed_date, _ = tarih_ayıkla(sil_arg)
+            silinecek_tarih = parsed_date
         else:
             silinecek_tarih = None
 
