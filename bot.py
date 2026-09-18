@@ -149,10 +149,13 @@ def son_kayitlari_getir(limit=5) -> str:
     try:
         conn, _ = db_manager.get_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT tarih, girdi, analiz FROM gunluk_hafiza ORDER BY tarih ASC LIMIT {int(limit)}")
+        cursor.execute(f"SELECT tarih, girdi, analiz FROM gunluk_hafiza ORDER BY tarih DESC LIMIT {int(limit)}")
         rows = cursor.fetchall()
         conn.close()
         if not rows: return "Henüz geçmiş kayıt bulunmuyor."
+        
+        # En güncel kayıtları kronolojik sıraya sok (eskiden yeniye)
+        rows.reverse()
         
         hafiza_metni = ""
         for row in rows:
@@ -557,7 +560,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         gecmis_konsept = son_kayitlari_getir(limit=5)
         
         prompt = (
-            f"Referans Tarihler: Bugün = {tarih_bugun}, Dün = {tarih_dun}\n"
+            f"🚨 KRİTİK TARİH BİLGİSİ: Şu an EYLÜL ayındayız! Bugüne ait güncel tarih = {tarih_bugun}, dün = {tarih_dun}.\n"
+            f"ASLA eski Temmuz (07) veya Haziran (06) tarihlerini hedef tarih olarak belirleme!\n\n"
             f"Geçmiş Performanslar:\n{gecmis_konsept}\n\n"
             f"Görevlerin:\n"
             f"1. Ekteki ses kaydını dinle ve kelimesi kelimesine TÜRKÇE transkripsiyonunu (dökümünü) yap.\n"
