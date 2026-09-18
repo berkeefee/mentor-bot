@@ -2,7 +2,9 @@ import os
 import sys
 import sqlite3
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+TR_TZ = timezone(timedelta(hours=3))
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -270,7 +272,7 @@ def tarih_ayıkla(metin: str):
     tarih_deseni = re.match(r"^\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
     if tarih_deseni:
         return tarih_deseni.group(1), temiz_metin[tarih_deseni.end():].strip()
-    return datetime.now().strftime("%Y-%m-%d"), temiz_metin
+    return datetime.now(TR_TZ).strftime("%Y-%m-%d"), temiz_metin
 
 
 # --- 2. SİSTEM TALİMATI ---
@@ -378,9 +380,9 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if tarih_bul:
             istenen_tarih = tarih_bul.group(0)
         elif "bugun" in msg_clean:
-            istenen_tarih = datetime.now().strftime("%Y-%m-%d")
+            istenen_tarih = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         elif "dun" in msg_clean:
-            istenen_tarih = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            istenen_tarih = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         else:
             istenen_tarih = None
 
@@ -402,9 +404,9 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if tarih_bul:
             silinecek_tarih = tarih_bul.group(0)
         elif "bugun" in msg_clean:
-            silinecek_tarih = datetime.now().strftime("%Y-%m-%d")
+            silinecek_tarih = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         elif "dun" in msg_clean:
-            silinecek_tarih = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            silinecek_tarih = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         elif "son" in msg_clean:
             try:
                 conn, _ = db_manager.get_connection()
@@ -452,8 +454,18 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         hedef_tarih, temiz_girdi = tarih_ayıkla(gelen_mesaj)
         gecmis_konsept = son_kayitlari_getir(limit=5)
+        tarih_bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         
-        prompt = f"Hedeflenen Kayıt Tarihi: {hedef_tarih}\nKullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\nGeçmiş Performanslar:\n{gecmis_konsept}\n\nAnaliz et, karne üret."
+        prompt = (
+            f"🚨 KRİTİK TARİH BİLGİSİ: Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}.\n"
+            f"Hedeflenen Kayıt Tarihi KESİNLİKLE: {hedef_tarih}\n"
+            f"Geçmiş performanslar eski aylara (Haziran/Temmuz 06/07 vb.) ait olabilir. "
+            f"Geçmiş kayıtlardaki eski tarihlere bakarak {hedef_tarih} tarihini KESİNLİKLE değiştirme!\n\n"
+            f"Kullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\n"
+            f"Geçmiş Performanslar (Sadece referans gelişim kıyası içindir):\n{gecmis_konsept}\n\n"
+            f"Analiz et, karne üret."
+        )
+
         primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         models_to_try = [primary_model, "gemini-2.0-flash", "gemini-3.5-flash"]
         response = None
@@ -555,14 +567,17 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         )
         
-        tarih_bugun = datetime.now().strftime("%Y-%m-%d")
-        tarih_dun = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        tarih_bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
+        tarih_dun = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         gecmis_konsept = son_kayitlari_getir(limit=5)
         
         prompt = (
-            f"🚨 KRİTİK TARİH BİLGİSİ: Şu an EYLÜL ayındayız! Bugüne ait güncel tarih = {tarih_bugun}, dün = {tarih_dun}.\n"
-            f"ASLA eski Temmuz (07) veya Haziran (06) tarihlerini hedef tarih olarak belirleme!\n\n"
-            f"Geçmiş Performanslar:\n{gecmis_konsept}\n\n"
+            f"🚨 KRİTİK TARİH VE ZAMAN DİREKTİFİ:\n"
+            f"Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}, dün = {tarih_dun}.\n"
+            f"Geçmiş performanslar eski aylara (06 veya 07 - Haziran/Temmuz) ait olabilir.\n"
+            f"SABİT KURAL: Hedef tarihi KESİNLİKLE {tarih_bugun} (veya kullanıcı ses kaydında açıkça dün için konuşuyorsa {tarih_dun}) olarak belirle!\n"
+            f"ASLA ve KESİNLİKLE geçmiş kayıtlardaki 06 (Haziran) veya 07 (Temmuz) aylarını hedef tarih yapma!\n\n"
+            f"Geçmiş Performanslar (Sadece referans gelişim kıyası içindir):\n{gecmis_konsept}\n\n"
             f"Görevlerin:\n"
             f"1. Ekteki ses kaydını dinle ve kelimesi kelimesine TÜRKÇE transkripsiyonunu (dökümünü) yap.\n"
             f"2. Ses kaydında geçen ifadeleri analiz et. Eğer kullanıcı dün yaptıkları için konuşuyorsa hedef tarihi dünün tarihi ({tarih_dun}) olarak belirle. Aksi halde bugünün tarihi ({tarih_bugun}) olarak kabul et.\n"
@@ -611,7 +626,14 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         
         tarih_bulucu = re.search(r"TARİH:\s*(\d{4}-\d{2}-\d{2})", full_text)
         if tarih_bulucu:
-            hedef_tarih = tarih_bulucu.group(1)
+            extracted_date = tarih_bulucu.group(1)
+            # Eğer Gemini eski bir ayı (06 veya 07 - Haziran/Temmuz) çıkardıysa, güncel Türkiye tarihiyle düzelt!
+            if extracted_date.startswith("2026-07") or extracted_date.startswith("2026-06"):
+                print(f"[Sistem Uyarı]: Gemini eski ay ({extracted_date}) çıkardı, Türkiye tarihi ({tarih_bugun}) ile düzeltiliyor.", file=sys.stderr)
+                hedef_tarih = tarih_bugun
+            else:
+                hedef_tarih = extracted_date
+
             
         if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
             parts = full_text.split("ANALİZ:")
