@@ -693,28 +693,44 @@ def grafik_olustur():
     fig, ax = plt.subplots(figsize=(11, 5.5), facecolor='#121214')
     ax.set_facecolor('#18181c')
 
-    ax.plot(x_indices, plot_scores, color='#10b981', linewidth=2.0, label='Performans Trendi')
+    split_idx = max(0, len(x_indices) - 10)
 
-    norm_x = [x for x, exc in zip(x_indices, is_exception_list) if not exc]
-    norm_y = [plot_scores[x] for x in norm_x]
-    if norm_x:
-        ax.scatter(norm_x, norm_y, color='#ffffff', edgecolor='#10b981', s=25, linewidth=1.5, zorder=3)
+    # 1. Önceki Günler: Yeşil Performans Trend Çizgisi & Dolgusu
+    if split_idx > 0:
+        past_x = x_indices[:split_idx + 1]
+        past_y = plot_scores[:split_idx + 1]
+        ax.plot(past_x, past_y, color='#10b981', linewidth=2.0, label='Geçmiş Performans Trendi')
+        ax.fill_between(past_x, past_y, color='#10b981', alpha=0.08)
+        
+        # Geçmiş normal noktalar
+        past_norm_x = [x for x in x_indices[:split_idx] if not is_exception_list[x]]
+        past_norm_y = [plot_scores[x] for x in past_norm_x]
+        if past_norm_x:
+            ax.scatter(past_norm_x, past_norm_y, color='#10b981', edgecolor='#ffffff', s=25, linewidth=1.2, zorder=3)
 
+    # 2. Son 10 Gün: Parlak Mavi Çizgi & Dolgu & Vurgulu Noktalar
+    recent_x = x_indices[split_idx:]
+    recent_y = plot_scores[split_idx:]
+    ax.plot(recent_x, recent_y, color='#0284c7', linewidth=3.2, label='Son 10 Gün (Güncel Veriler)')
+    ax.fill_between(recent_x, recent_y, color='#0284c7', alpha=0.12)
+
+    # Son 10 gün normal noktaları (Mavi)
+    recent_norm_x = [x for x in recent_x if not is_exception_list[x]]
+    recent_norm_y = [plot_scores[x] for x in recent_norm_x]
+    if recent_norm_x:
+        ax.scatter(recent_norm_x, recent_norm_y, color='#38bdf8', edgecolor='#ffffff', s=60, linewidth=1.8, zorder=5)
+
+    # 3. İstisna Noktaları (Gri)
     exc_x = [x for x, exc in zip(x_indices, is_exception_list) if exc]
     exc_y = [plot_scores[x] for x in exc_x]
     if exc_x:
-        ax.scatter(exc_x, exc_y, color='#6b7280', edgecolor='#9ca3af', s=50, linewidth=1.5, zorder=4, label='İstisna Günü')
+        ax.scatter(exc_x, exc_y, color='#6b7280', edgecolor='#9ca3af', s=55, linewidth=1.5, zorder=6, label='İstisna Günü')
 
-    recent_count = min(10, len(x_indices))
-    recent_indices = x_indices[-recent_count:]
-    recent_scores = [plot_scores[i] for i in recent_indices]
-    ax.plot(recent_indices, recent_scores, color='#06b6d4', linewidth=2.8, label='Son 10 Günlük Takvim')
-
-    ax.fill_between(x_indices, plot_scores, color='#10b981', alpha=0.08)
     ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
     ax.tick_params(colors='#a1a1aa', labelsize=9)
 
-    for i in recent_indices:
+    # Son 10 gün puan etiketleri (Mavi)
+    for i in recent_x:
         if is_exception_list[i]:
             lbl = "İstisna"
             c = '#9ca3af'
@@ -722,7 +738,7 @@ def grafik_olustur():
             lbl = f"{raw_scores[i]}"
             c = '#38bdf8'
         ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
-                    xytext=(0, 9), ha='center', fontsize=8.5, fontweight='bold', color=c)
+                    xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
 
     step = max(1, len(x_indices) // 14)
     tick_positions = x_indices[::step]
@@ -733,7 +749,7 @@ def grafik_olustur():
     ax.set_xticks(tick_positions)
     ax.set_xticklabels(tick_labels, rotation=30, color='#e4e4e7')
 
-    ax.set_title('Gelişim ve Performans Trend Grafiği (Takvimsel Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
+    ax.set_title('Gelişim ve Performans Trend Grafiği (Son 10 Gün Vurgulu Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
     ax.set_ylabel('Puan (10 Üzerinden)', color='#a1a1aa', fontsize=11, labelpad=10)
     ax.set_ylim(-0.5, 11)
 
