@@ -3,10 +3,12 @@ import sys
 import sqlite3
 import re
 from datetime import datetime, timedelta, timezone
-
-TR_TZ = timezone(timedelta(hours=3))
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import asyncio
+import json
+
+TR_TZ = timezone(timedelta(hours=3))
 
 # --- ARKA PLAN ÇALIŞMA LOG YÖNLENDİRMESİ ---
 # Bulut ortamlarında (Render/Railway vb.) logları konsoldan izleyebilmek için,
@@ -24,8 +26,6 @@ import matplotlib.pyplot as plt
 # --- GOOGLE VE TELEGRAM KÜTÜPHANELERİ ---
 from google import genai
 from google.genai import types
-import asyncio
-import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -59,7 +59,6 @@ class CloudServerHandler(BaseHTTPRequestHandler):
         return
 
 # --- KİMLİK DOĞRULAMALARI ---
-# Yerel çalıştırmalar için .env dosyası varsa yükle
 if os.path.exists(".env"):
     try:
         with open(".env", "r", encoding="utf-8") as f:
@@ -79,8 +78,97 @@ if not GEMINI_KEY or not TELEGRAM_TOKEN:
 client = genai.Client(api_key=GEMINI_KEY, http_options=types.HttpOptions(timeout=180000)) if GEMINI_KEY else None
 DB_FILE = os.environ.get("DATABASE_PATH", "ajan_hafiza.db")
 
+# --- 1. SABİTLER, YARDIMCILAR VE SÖZ HAVUZU ---
 
-# --- 1. VERİTABANI VE GRAFİK FONKSİYONLARI ---
+ALANLAR = ["BESLENME", "SPOR", "UYKU", "KİŞİSEL GELİŞİM", "FİNANS", "SOSYAL İLİŞKİLER", "YAZILIM"]
+
+ALAN_ESLESTIRME = {
+    "beslenme": "BESLENME", "diyet": "BESLENME", "yemek": "BESLENME", "gida": "BESLENME", "nutrition": "BESLENME",
+    "spor": "SPOR", "fitness": "SPOR", "antrenman": "SPOR", "egzersiz": "SPOR", "gym": "SPOR", "kosu": "SPOR",
+    "uyku": "UYKU", "sleep": "UYKU",
+    "kisisel gelisim": "KİŞİSEL GELİŞİM", "kisisel": "KİŞİSEL GELİŞİM", "kitap": "KİŞİSEL GELİŞİM", "okuma": "KİŞİSEL GELİŞİM", "gelisim": "KİŞİSEL GELİŞİM",
+    "finans": "FİNANS", "para": "FİNANS", "ekonomi": "FİNANS", "borsa": "FİNANS", "yatirim": "FİNANS", "finance": "FİNANS",
+    "sosyal iliskiler": "SOSYAL İLİŞKİLER", "sosyal": "SOSYAL İLİŞKİLER", "iliskiler": "SOSYAL İLİŞKİLER", "arkadas": "SOSYAL İLİŞKİLER", "aile": "SOSYAL İLİŞKİLER", "social": "SOSYAL İLİŞKİLER",
+    "yazilim": "YAZILIM", "kod": "YAZILIM", "kodlama": "YAZILIM", "software": "YAZILIM", "programlama": "YAZILIM", "proje": "YAZILIM", "developer": "YAZILIM"
+}
+
+def _tr_baslik(metin: str) -> str:
+    if not metin: return ""
+    kucuk = metin.replace("I", "ı").replace("İ", "i").lower()
+    return " ".join(("İ" + k[1:]) if k[0] == "i" else (k[0].upper() + k[1:])
+                    for k in kucuk.split() if k)
+
+def _alan_normalize(metin: str) -> str | None:
+    if not metin: return None
+    temiz = metin.strip().lower().replace("ı", "i").replace("ğ", "g").replace("ü", "u").replace("ş", "s").replace("ö", "o").replace("ç", "c")
+    if temiz in ALAN_ESLESTIRME:
+        return ALAN_ESLESTIRME[temiz]
+    for k, v in ALAN_ESLESTIRME.items():
+        if k in temiz:
+            return v
+    return None
+
+SOZ_HAVUZU = [
+    "İstemediğin şeyleri yapabildiğin zaman disiplin sahibi olursun.",
+    "Olayları kontrol edebildiğin zaman disiplin sahibi olursun.",
+    "Eğer güçlüysen daha da güçlenirsin. Ama eğer zayıfsan zayıflarsın.",
+    "Sadece kontrol edebildiğin şeylere odaklan.",
+    "Pes ettiğin zaman başarısız olursun.",
+    "Uzun vadeli bakış açısını benimse ve küçük başarılarla ilerle.",
+    "Kaygılarının davranışlarının önüne geçmesine izin verme.",
+    "Zirve yalnızlarındır.",
+    "Bu hayat kendini başkalarına beğendirmeye ve başkalarına benzemeye çalışacak kadar uzun ve kalitesiz değil. Be yourself.",
+    "Başarısızlığın üstesinden en iyi bahaneler gelir.",
+    "Çok denemekten, çok çalışmaktan hiçbir şey kaybetmezsin. Bunları yapmayı bıraktığında kaybedersin. Herkes yatağında uyurken koşuya çıkmak, herkes telefondayken bir şey daha öğrenmek, herkes dizi izlerken üretmek. Israrla devam ettiğinde bir şey olmaz diğeri olur; yolun sonunda hayal ettiğin şeyler bir şekilde oluyor.",
+    "İnsan rutinlerinin ve ritüellerinin çocuğudur.",
+    "Kervan yolda düzülür.",
+    "Akıllı düşünene kadar deli köprüyü geçermiş; o yüzden hızlı aksiyon al.",
+    "Haz mutluluk değildir.",
+    "Beklenmeyeni bekle.",
+    "Kaygını besleyecek davranışlardan bilinçli olarak kaçın ve onları besleme.",
+    "Kaygının yarattığı felç edici durağanlığa teslim olmak yerine, odağı günlük rutinlere ve sorumluluklara çevirerek hayatı sürdürmek en sağlam zırhtır.",
+    "Kendi işini kurmak çok zordur ve sadece acıya katlanabilenler başarılı olur.",
+    "Başarılı olmamın nedeni: zor zamanlarda asla vazgeçmedim, bırakmadım.",
+    "Başarı için rakiplerinden daha fazla acıya katlanman lazım.",
+    "Dişi ağrıyan insan, dişi ağrımayan herkesi mutlu zanneder. — Peyami Safa",
+    "Mutluluk hayatından razı olmakla ilgilidir.",
+    "Atılırsan ekmek yersin.",
+    "O işi daha önce çok iyi yapmış en iyi kişiyi taklit etmen en önemlisi.",
+    "'Bugün ne yapayım' diye kalkıyorsan sabah hiç kalkma daha iyi.",
+    "Zayıflar yanlışlar yapar; güçlü insanlar hatalar yapıp onlardan gerekli dersleri alıp devam eder.",
+    "İnsanlara yapılacak en kötü şey, onlar sana yalvarmadıkça onlara yardım etmendir.",
+    "'Güç istemiyorum' tamamen yalandır; herkes çok fazla güç ister.",
+    "Güç istemekteki amacımız insanları yönetmek değil, güce muhtaç kalmamak olmalıdır.",
+    "İnsanlara hayır diyemiyorsan kendine evet diyemiyorsun.",
+    "Sencil olmak için bencil ol.",
+    "Mükemmeliyetçi olacağıma ölürüm daha iyi; mükemmel diye bir şey yok.",
+    "Her şeyi yaz, çiz, matematiksel hesaba dök.",
+    "En güzel veri toplama yöntemi hiçbir şey söylemeden karşı tarafı dinlemek.",
+    "İnsanları özgüvensiz veya emin olmadıkları noktalarda cesaretlendir; çok iyi olduğunu düşündüğü konularda fazla pohpohlama.",
+    "Direkt kendin bir şey yapma; onlardan ne kapabilirim diye bak.",
+    "İnsanların etiketlerine kanma; genelde çoğunluk buna kanar.",
+]
+
+def gunun_sozu(analiz: str, tarih: str) -> str:
+    secilen_id = None
+    m = re.search(r"SÖZ ID:\s*(\d+)", analiz, re.IGNORECASE)
+    if m:
+        try:
+            val = int(m.group(1))
+            if 0 <= val < len(SOZ_HAVUZU):
+                secilen_id = val
+        except (ValueError, TypeError):
+            pass
+    if secilen_id is None:
+        try:
+            dt = datetime.strptime(tarih, "%Y-%m-%d")
+            secilen_id = dt.toordinal() % len(SOZ_HAVUZU)
+        except Exception:
+            secilen_id = 0
+    soz = SOZ_HAVUZU[secilen_id]
+    return f"🗣️ **GÜNÜN SÖZÜ**\n\n> \"{soz}\""
+
+# --- 2. VERİTABANI VE GRAFİK YÖNETİCİSİ ---
 class DatabaseManager:
     def __init__(self):
         self.db_url = os.environ.get("DATABASE_URL")
@@ -93,7 +181,7 @@ class DatabaseManager:
                 conn = psycopg2.connect(self.db_url, connect_timeout=3)
                 return conn, "%s"
             except Exception as e:
-                print(f"[Veritabani Uyari]: Supabase/PostgreSQL baglantisi kurulamadi ({e}). Yerel SQLite'a geciliyor...", file=sys.stderr)
+                print(f"[Veritabani Uyari]: DATABASE_URL tanimli ancak baglanti kurulamadi ({e}). Yerel SQLite'a geciliyor...", file=sys.stderr)
         
         db_dir = os.path.dirname(DB_FILE)
         if db_dir and not os.path.exists(db_dir):
@@ -114,6 +202,22 @@ class DatabaseManager:
                         total_puan REAL
                     )
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS gun_odak (
+                        tarih VARCHAR(50) PRIMARY KEY,
+                        alan TEXT,
+                        hedef TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS aktif_kisitlar (
+                        id SERIAL PRIMARY KEY,
+                        kisit TEXT,
+                        baslangic_tarih VARCHAR(50),
+                        bitis_tarih VARCHAR(50),
+                        aktif INTEGER
+                    )
+                """)
             else:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS gunluk_hafiza (
@@ -124,7 +228,39 @@ class DatabaseManager:
                         total_puan REAL
                     )
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS gun_odak (
+                        tarih TEXT PRIMARY KEY,
+                        alan TEXT,
+                        hedef TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS aktif_kisitlar (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kisit TEXT,
+                        baslangic_tarih TEXT,
+                        bitis_tarih TEXT,
+                        aktif INTEGER
+                    )
+                """)
             conn.commit()
+
+            yeni_kolonlar = [
+                ("uyku_saat", "REAL"),
+                ("ana_odak", "TEXT"),
+                ("odak_hedef", "TEXT"),
+                ("puanlar_json", "TEXT"),
+                ("istisna_modu", "INTEGER"),
+            ]
+            for ad, tip in yeni_kolonlar:
+                try:
+                    cursor.execute(f"ALTER TABLE gunluk_hafiza ADD COLUMN {ad} {tip}")
+                    conn.commit()
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+
             conn.close()
         except Exception as e:
             print(f"[Veritabani Hata]: veritabanini_hazirla basarisiz: {e}", file=sys.stderr)
@@ -134,18 +270,35 @@ db_manager = DatabaseManager()
 def veritabanini_hazirla():
     db_manager.veritabanini_hazirla()
 
-def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total_puan: float):
+def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total_puan: float | None, detay: dict = None) -> bool:
+    detay = detay or {}
+    uyku_saat = detay.get("uyku_saat")
+    ana_odak = detay.get("ana_odak")
+    odak_hedef = detay.get("odak_hedef")
+    puanlar_json = json.dumps(detay.get("puanlar", {}), ensure_ascii=False) if detay.get("puanlar") is not None else None
+    istisna_modu = 1 if detay.get("istisna_modu") else 0
+    conn = None
     try:
         conn, p = db_manager.get_connection()
         cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (belirlenen_tarih,))
         cursor.execute(
-            f"INSERT INTO gunluk_hafiza (tarih, girdi, analiz, total_puan) VALUES ({p}, {p}, {p}, {p})",
-            (belirlenen_tarih, metin, analiz_sonucu, total_puan)
+            f"""INSERT INTO gunluk_hafiza 
+                (tarih, girdi, analiz, total_puan, uyku_saat, ana_odak, odak_hedef, puanlar_json, istisna_modu) 
+                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})""",
+            (belirlenen_tarih, metin, analiz_sonucu, total_puan, uyku_saat, ana_odak, odak_hedef, puanlar_json, istisna_modu)
         )
         conn.commit()
         conn.close()
+        return True
     except Exception as e:
         print(f"[Veritabani Hata]: hafizaya_kaydet basarisiz: {e}", file=sys.stderr)
+        if conn:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception: pass
+        return False
 
 def son_kayitlari_getir(limit=5) -> str:
     try:
@@ -156,9 +309,7 @@ def son_kayitlari_getir(limit=5) -> str:
         conn.close()
         if not rows: return "Henüz geçmiş kayıt bulunmuyor."
         
-        # En güncel kayıtları kronolojik sıraya sok (eskiden yeniye)
         rows.reverse()
-        
         hafiza_metni = ""
         for row in rows:
             hafiza_metni += f"--- Kayıt Tarihi: {row[0]} ---\nGirdi: {row[1]}\nAnaliz: {row[2]}\n\n"
@@ -171,7 +322,7 @@ def spesifik_tarih_getir(hedef_tarih: str):
     try:
         conn, p = db_manager.get_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT girdi, analiz, total_puan FROM gunluk_hafiza WHERE tarih = {p}", (hedef_tarih,))
+        cursor.execute(f"SELECT girdi, analiz, total_puan FROM gunluk_hafiza WHERE tarih = {p} ORDER BY id DESC LIMIT 1", (hedef_tarih,))
         row = cursor.fetchone()
         conn.close()
         return row
@@ -179,89 +330,421 @@ def spesifik_tarih_getir(hedef_tarih: str):
         print(f"[Veritabani Hata]: spesifik_tarih_getir basarisiz: {e}", file=sys.stderr)
         return None
 
+# --- ODAK VE KISIT YARDIMCILARI ---
+
+def odak_kaydet(tarih: str, alan: str, hedef: str) -> bool:
+    conn = None
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM gun_odak WHERE tarih = {p}", (tarih,))
+        cursor.execute(f"INSERT INTO gun_odak (tarih, alan, hedef) VALUES ({p}, {p}, {p})", (tarih, alan, hedef))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[Veritabani Hata]: odak_kaydet basarisiz: {e}", file=sys.stderr)
+        if conn:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception: pass
+        return False
+
+def odak_getir(tarih: str) -> tuple:
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT alan, hedef FROM gun_odak WHERE tarih = {p}", (tarih,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return (row[0], row[1])
+        return (None, None)
+    except Exception as e:
+        print(f"[Veritabani Hata]: odak_getir basarisiz: {e}", file=sys.stderr)
+        return (None, None)
+
+def onceki_odak_getir(tarih: str) -> tuple:
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""SELECT o.alan, o.hedef, h.puanlar_json, h.total_puan 
+                FROM gun_odak o 
+                LEFT JOIN gunluk_hafiza h ON o.tarih = h.tarih 
+                WHERE o.tarih < {p} 
+                ORDER BY o.tarih DESC LIMIT 1""", 
+            (tarih,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            o_alan, o_hedef, o_puanlar_json, o_total_puan = row
+            odak_puani = None
+            if o_puanlar_json:
+                try:
+                    pj = json.loads(o_puanlar_json)
+                    odak_puani = pj.get(o_alan)
+                except Exception:
+                    pass
+            if odak_puani is None:
+                odak_puani = o_total_puan
+            return (o_alan, o_hedef, odak_puani)
+        return (None, None, None)
+    except Exception as e:
+        print(f"[Veritabani Hata]: onceki_odak_getir basarisiz: {e}", file=sys.stderr)
+        return (None, None, None)
+
+def kisit_ekle(kisit: str, baslangic_tarih: str) -> bool:
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"INSERT INTO aktif_kisitlar (kisit, baslangic_tarih, bitis_tarih, aktif) VALUES ({p}, {p}, NULL, 1)", (kisit, baslangic_tarih))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[Veritabani Hata]: kisit_ekle basarisiz: {e}", file=sys.stderr)
+        return False
+
+def kisit_kapat(kisit_anahtar: str, bitis_tarih: str) -> bool:
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        if p == "%s":
+            cursor.execute(f"UPDATE aktif_kisitlar SET aktif = 0, bitis_tarih = %s WHERE aktif = 1 AND kisit ILIKE %s", (bitis_tarih, f"%{kisit_anahtar}%"))
+        else:
+            cursor.execute(f"UPDATE aktif_kisitlar SET aktif = 0, bitis_tarih = ? WHERE aktif = 1 AND LOWER(kisit) LIKE LOWER(?)", (bitis_tarih, f"%{kisit_anahtar}%"))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[Veritabani Hata]: kisit_kapat basarisiz: {e}", file=sys.stderr)
+        return False
+
+def aktif_kisitlari_getir() -> list:
+    try:
+        conn, _ = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT kisit FROM aktif_kisitlar WHERE aktif = 1")
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows] if rows else []
+    except Exception as e:
+        print(f"[Veritabani Uyari]: aktif_kisitlari_getir hatasi: {e}", file=sys.stderr)
+        return []
+
+# --- 3. PUANLAMA, UYKU VE TREND HESAPLAMALARI ---
+
+def puanlari_ayristir(analiz: str) -> dict:
+    sonuc = {alan: None for alan in ALANLAR}
+    m = re.search(r"PUANLAR:\s*([^\n]+)", analiz, re.IGNORECASE)
+    if m:
+        satir = m.group(1).strip()
+        parcalar = [p.strip() for p in satir.split(";") if p.strip()]
+        for p in parcalar:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                alan_norm = _alan_normalize(k.strip())
+                if alan_norm:
+                    v_clean = v.strip().upper()
+                    if v_clean in ["N/A", "NA", "NONE", "-", ""]:
+                        sonuc[alan_norm] = None
+                    else:
+                        val_m = re.search(r"(\d+(?:\.\d+)?)", v_clean)
+                        if val_m:
+                            try:
+                                sonuc[alan_norm] = float(val_m.group(1))
+                            except Exception:
+                                sonuc[alan_norm] = None
+        if any(v is not None for v in sonuc.values()):
+            return sonuc
+
+    for alan in ALANLAR:
+        pattern = rf"(?:[🍎🏋️😴📚💰🤝💻]\s*)?\*?\*?{re.escape(alan)}\*?\*?[:\s]+(\d+(?:\.\d+)?|N/A)"
+        fm = re.search(pattern, analiz, re.IGNORECASE)
+        if fm:
+            val_str = fm.group(1).strip().upper()
+            if val_str not in ["N/A", "NA"]:
+                try:
+                    sonuc[alan] = float(val_str)
+                except Exception:
+                    pass
+    return sonuc
+
+def agirlikli_skor(puanlar: dict, ana_odak: str = None) -> float | None:
+    if not puanlar:
+        return None
+    gecerli_puanlar = {k: v for k, v in puanlar.items() if v is not None}
+    if not gecerli_puanlar:
+        return None
+
+    odak_norm = _alan_normalize(ana_odak) if ana_odak else None
+    if odak_norm and odak_norm in gecerli_puanlar:
+        pay = 0.0
+        payda = 0.0
+        for alan, puan in gecerli_puanlar.items():
+            agirlik = 1.6 if alan == odak_norm else 1.0
+            pay += puan * agirlik
+            payda += agirlik
+        skor = pay / payda
+    else:
+        skor = sum(gecerli_puanlar.values()) / len(gecerli_puanlar)
+
+    skor = max(0.0, min(10.0, skor))
+    return round(skor, 1)
+
+def en_dusuk_iki_alan(puanlar: dict) -> list:
+    gecerli = [(k, v) for k, v in puanlar.items() if v is not None]
+    if not gecerli:
+        return []
+    gecerli.sort(key=lambda x: x[1])
+    return [k for k, _ in gecerli[:2]]
+
+def ayikla_uyku_saat(metin: str, gemini_yanit: str = "") -> float | None:
+    m_gemini = re.search(r"UYKU_SAAT:\s*(\d+(?:\.\d+)?)", gemini_yanit, re.IGNORECASE)
+    if m_gemini:
+        try:
+            return float(m_gemini.group(1))
+        except Exception:
+            pass
+    m_metin = re.search(r"(\d+(?:\.\d+)?)\s*(?:saat|st)\s*(?:uyudum|uyku|yattim|yattım)", metin, re.IGNORECASE)
+    if m_metin:
+        try:
+            return float(m_metin.group(1))
+        except Exception:
+            pass
+    return None
+
+def trend_ozeti(tarih: str) -> str:
+    try:
+        conn, p = db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""SELECT tarih, total_puan, uyku_saat, ana_odak, puanlar_json, istisna_modu
+                FROM gunluk_hafiza
+                WHERE tarih <= {p} AND (istisna_modu IS NULL OR istisna_modu = 0)
+                ORDER BY tarih DESC LIMIT 7""",
+            (tarih,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        if len(rows) < 4:
+            return ""
+
+        rows.reverse()
+        maddeler = []
+
+        uykular = [r[2] for r in rows if r[2] is not None]
+        if uykular:
+            alti_alti = sum(1 for u in uykular if u < 6.0)
+            if alti_alti > 0:
+                maddeler.append(f"Uyku son {len(rows)} günde {alti_alti} kez 6 saatin altında kaldı.")
+            else:
+                ortalama_uyku = round(sum(uykular) / len(uykular), 1)
+                maddeler.append(f"Uyku ortalaması {ortalama_uyku} saat ile dengeli.")
+
+        alan_puanlari = {a: [] for a in ALANLAR}
+        for r in rows:
+            if r[4]:
+                try:
+                    pjs = json.loads(r[4])
+                    for a, val in pjs.items():
+                        if val is not None and a in alan_puanlari:
+                            alan_puanlari[a].append(val)
+                except Exception:
+                    pass
+        for alan, p_list in alan_puanlari.items():
+            if len(p_list) >= 3 and (max(p_list) - min(p_list) >= 4):
+                dalga_str = " / ".join(str(int(x) if x == int(x) else x) for x in p_list)
+                maddeler.append(f"{_tr_baslik(alan)} puanları dalgalı ({dalga_str}).")
+                break
+
+        odakli_puanlar = [r[1] for r in rows if r[3] and r[1] is not None]
+        odaksiz_puanlar = [r[1] for r in rows if not r[3] and r[1] is not None]
+        if odakli_puanlar and odaksiz_puanlar:
+            fark = (sum(odakli_puanlar)/len(odakli_puanlar)) - (sum(odaksiz_puanlar)/len(odaksiz_puanlar))
+            if abs(fark) >= 0.5:
+                if fark > 0:
+                    maddeler.append(f"Ana Odak beyan edilen günlerde ortalama skor {round(fark, 1)} puan daha yüksek.")
+                else:
+                    maddeler.append(f"Ana Odak beyan edilen günlerde ortalama skor {round(abs(fark), 1)} puan daha düşük.")
+
+        if not maddeler:
+            toplam_skorlar = [r[1] for r in rows if r[1] is not None]
+            if toplam_skorlar:
+                ort = round(sum(toplam_skorlar) / len(toplam_skorlar), 1)
+                maddeler.append(f"Son {len(rows)} günün genel performans ortalaması {ort} / 10.")
+
+        cikti = "### 📈 TREND\nSon 7 günde:\n" + "\n".join(f"- {m}" for m in maddeler)
+        return cikti
+    except Exception as e:
+        print(f"[Trend Hata]: trend_ozeti olusturulamadi: {e}", file=sys.stderr)
+        return ""
+
+def raporu_birlestir(analiz_metni: str, soz_blogu: str, total_puan: float | None, trend_metni: str, istisna_modu: bool) -> str:
+    temiz_analiz = re.sub(r"SÖZ ID:\s*\d+\s*", "", analiz_metni, flags=re.IGNORECASE)
+    temiz_analiz = re.sub(r"KISIT EKLE:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+    temiz_analiz = re.sub(r"KISIT KAPAT:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+    temiz_analiz = re.sub(r"PUANLAR:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+    temiz_analiz = re.sub(r"UYKU_SAAT:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+
+    if istisna_modu:
+        skor_blogu = "\n### 🧮 PERFORMANS SKORU\n⚠️ **İSTİSNA MODU AKTİF:** Puanlama askıya alındı. Toparlanmaya odaklanın.\n"
+    elif total_puan is not None:
+        skor_blogu = f"\n### 🧮 PERFORMANS SKORU\n🔢 **TOTAL GÜN PUANI:** {total_puan} / 10\n"
+    else:
+        skor_blogu = "\n### 🧮 PERFORMANS SKORU\nℹ️ **TOTAL GÜN PUANI:** N/A (Puanlanacak yeterli veri yok)\n"
+
+    if "### 🧮 PERFORMANS SKORU" in temiz_analiz:
+        temiz_analiz = re.sub(r"### 🧮 PERFORMANS SKORU.*?(?=###|\Z)", skor_blogu, temiz_analiz, flags=re.DOTALL)
+    else:
+        if "### 🚀 YARIN İÇİN STRATEJİK EMİRLER" in temiz_analiz:
+            temiz_analiz = temiz_analiz.replace("### 🚀 YARIN İÇİN STRATEJİK EMİRLER", f"{skor_blogu}\n### 🚀 YARIN İÇİN STRATEJİK EMİRLER")
+        else:
+            temiz_analiz += f"\n{skor_blogu}"
+
+    son_rapor = f"{soz_blogu}\n\n{temiz_analiz.strip()}"
+    if trend_metni and trend_metni.strip():
+        son_rapor += f"\n\n{trend_metni.strip()}"
+
+    return son_rapor.strip()
+
+# --- 4. GRAFİK OLUŞTURMA (HER GÜN ÇİZİM & İSTİSNA MODU DESTEKLİ) ---
+
 def grafik_olustur():
     try:
         conn, _ = db_manager.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT tarih, AVG(total_puan) 
+            SELECT tarih, total_puan, istisna_modu 
             FROM gunluk_hafiza 
-            WHERE total_puan IS NOT NULL 
-            GROUP BY tarih 
-            ORDER BY tarih ASC
+            ORDER BY tarih ASC, id ASC
         """)
         rows = cursor.fetchall()
         conn.close()
     except Exception as e:
         print(f"[Veritabani Hata]: grafik_olustur DB hatasi: {e}", file=sys.stderr)
         return False
-    
-    if len(rows) < 1:
+
+    if not rows:
         return False
-        
-    tarih_str_list = []
-    puanlar = []
-    for row in rows:
+
+    kayitlar = {}
+    valid_dates = []
+    for r in rows:
+        t_str = r[0].strip() if r[0] else ""
         try:
-            date_obj = datetime.strptime(row[0].strip(), "%Y-%m-%d")
-            tarih_str_list.append(date_obj.strftime("%d.%m"))
-            puanlar.append(round(float(row[1]), 2) if row[1] is not None else 0.0)
-        except (ValueError, TypeError, AttributeError):
+            d_obj = datetime.strptime(t_str, "%Y-%m-%d").date()
+            kayitlar[t_str] = (r[1], r[2])
+            valid_dates.append(d_obj)
+        except Exception:
             continue
-            
-    if not puanlar:
+
+    if not valid_dates:
         return False
+
+    min_date = min(valid_dates)
+    max_date = max(max(valid_dates), datetime.now(TR_TZ).date())
+
+    all_dates = []
+    curr = min_date
+    while curr <= max_date:
+        all_dates.append(curr)
+        curr += timedelta(days=1)
+
+    tarih_str_list = [d.strftime("%d.%m") for d in all_dates]
     
-    x_indices = list(range(len(puanlar)))
+    raw_scores = []
+    is_exception_list = []
     
+    for d in all_dates:
+        d_str = d.strftime("%Y-%m-%d")
+        if d_str in kayitlar:
+            puan, istisna = kayitlar[d_str]
+            is_exc = (istisna == 1)
+            is_exception_list.append(is_exc)
+            if is_exc:
+                raw_scores.append(None)
+            elif puan is not None:
+                raw_scores.append(round(float(puan), 2))
+            else:
+                raw_scores.append(0.0)
+        else:
+            is_exception_list.append(False)
+            raw_scores.append(0.0)
+
+    trend_puanlari = [s for s in raw_scores if s is not None]
+    genel_ortalama = (sum(trend_puanlari) / len(trend_puanlari)) if trend_puanlari else 5.0
+    
+    plot_scores = []
+    for i, s in enumerate(raw_scores):
+        if s is not None:
+            plot_scores.append(s)
+        else:
+            prev_s = plot_scores[i-1] if i > 0 else genel_ortalama
+            plot_scores.append(prev_s)
+
+    x_indices = list(range(len(all_dates)))
+
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(11, 5.5), facecolor='#121214')
     ax.set_facecolor('#18181c')
-    
-    # 1. Tüm geçmiş çizgisi (Yeşil zemin & çizgi)
-    ax.plot(x_indices, puanlar, marker='o', markersize=5, markerfacecolor='#ffffff', 
-            markeredgecolor='#10b981', markeredgewidth=1.5, color='#10b981', 
-            linewidth=2.2, label='Geçmiş Performans Trendi')
-            
-    # 2. Son 10 güncel veriyi vurgula (Vurgulu Turkuaz Çizgi & Büyük Noktalar)
-    recent_count = min(10, len(puanlar))
-    ax.plot(x_indices[-recent_count:], puanlar[-recent_count:], marker='o', markersize=8.5, 
-            markerfacecolor='#06b6d4', markeredgecolor='#ffffff', markeredgewidth=2.2, 
-            color='#06b6d4', linewidth=3.2, label='Son 10 Günlük Güncel Veriler')
-            
-    # Arka plan alan dolgusu
-    ax.fill_between(x_indices, puanlar, color='#10b981', alpha=0.10)
+
+    ax.plot(x_indices, plot_scores, color='#10b981', linewidth=2.0, label='Performans Trendi')
+
+    norm_x = [x for x, exc in zip(x_indices, is_exception_list) if not exc]
+    norm_y = [plot_scores[x] for x in norm_x]
+    if norm_x:
+        ax.scatter(norm_x, norm_y, color='#ffffff', edgecolor='#10b981', s=25, linewidth=1.5, zorder=3)
+
+    exc_x = [x for x, exc in zip(x_indices, is_exception_list) if exc]
+    exc_y = [plot_scores[x] for x in exc_x]
+    if exc_x:
+        ax.scatter(exc_x, exc_y, color='#6b7280', edgecolor='#9ca3af', s=50, linewidth=1.5, zorder=4, label='İstisna Günü')
+
+    recent_count = min(10, len(x_indices))
+    recent_indices = x_indices[-recent_count:]
+    recent_scores = [plot_scores[i] for i in recent_indices]
+    ax.plot(recent_indices, recent_scores, color='#06b6d4', linewidth=2.8, label='Son 10 Günlük Takvim')
+
+    ax.fill_between(x_indices, plot_scores, color='#10b981', alpha=0.08)
     ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
     ax.tick_params(colors='#a1a1aa', labelsize=9)
-    
-    # YALNIZCA SON 10 GÜNCEL NOKTANIN ÜZERİNE SAYISAL MAVİ PUAN ETİKETLERİNİ YAZ
-    for i in range(len(puanlar) - recent_count, len(puanlar)):
-        ax.annotate(f'{puanlar[i]}', (x_indices[i], puanlar[i]), textcoords='offset points', 
-                    xytext=(0, 9), ha='center', fontsize=9.5, fontweight='bold', color='#38bdf8')
-                    
-    # X ekseni tarih etiketlerini akıllı yerleştir
+
+    for i in recent_indices:
+        if is_exception_list[i]:
+            lbl = "İstisna"
+            c = '#9ca3af'
+        else:
+            lbl = f"{raw_scores[i]}"
+            c = '#38bdf8'
+        ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
+                    xytext=(0, 9), ha='center', fontsize=8.5, fontweight='bold', color=c)
+
     step = max(1, len(x_indices) // 14)
     tick_positions = x_indices[::step]
     if x_indices[-1] not in tick_positions:
         tick_positions.append(x_indices[-1])
-        
+
     tick_labels = [tarih_str_list[i] for i in tick_positions]
     ax.set_xticks(tick_positions)
     ax.set_xticklabels(tick_labels, rotation=30, color='#e4e4e7')
-    
-    # Başlıklar ve Sınırlar
-    ax.set_title('Gelişim ve Performans Trend Grafiği (Son 10 Gün Detaylı Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
+
+    ax.set_title('Gelişim ve Performans Trend Grafiği (Takvimsel Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
     ax.set_ylabel('Puan (10 Üzerinden)', color='#a1a1aa', fontsize=11, labelpad=10)
-    ax.set_ylim(0, 11)
-    
+    ax.set_ylim(-0.5, 11)
+
     for spine in ['top', 'right', 'left', 'bottom']:
         ax.spines[spine].set_visible(False)
-        
+
     legend = ax.legend(facecolor='#18181c', edgecolor='#27272a', labelcolor='#e4e4e7', loc='upper left')
     legend.get_frame().set_linewidth(1.0)
-    
+
     plt.tight_layout()
-    
+
     grafik_yolu = "ilerleme_grafigi.png"
     plt.savefig(grafik_yolu, dpi=150, facecolor=fig.get_facecolor(), edgecolor='none')
     plt.close()
@@ -278,23 +761,31 @@ def format_date_tr(date_str: str) -> str:
     return date_str
 
 def tarih_ayıkla(metin: str):
-
-
     temiz_metin = metin.strip()
-    
-    # 1. Format: YYYY-MM-DD (e.g. 2026-09-16 veya [2026-09-16])
+    ilk_40 = temiz_metin[:40]
+
+    # 1. Format: YYYY-MM-DD
     m1 = re.search(r"\[?(\d{4}-\d{2}-\d{2})\]?", temiz_metin)
     if m1:
         return m1.group(1), temiz_metin.replace(m1.group(0), "").strip()
-        
-    # 2. Format: DD.MM.YYYY, DD.MM, DD/MM/YYYY, DD/MM (e.g. 16.09, 16.09.2026, 16/09)
-    m2 = re.search(r"\[?(\d{1,2})[\./](\d{1,2})(?:[\./](\d{4}))?\]?", temiz_metin)
-    if m2:
-        gun = int(m2.group(1))
-        ay = int(m2.group(2))
-        yil = int(m2.group(3)) if m2.group(3) else datetime.now(TR_TZ).year
+
+    # 2. Format a: 3 parçalı yıl içeren DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY
+    m2_3part = re.search(r"\[?(\d{1,2})[\./\-](\d{1,2})[\./\-](\d{4})\]?", ilk_40)
+    if m2_3part:
+        gun = int(m2_3part.group(1))
+        ay = int(m2_3part.group(2))
+        yil = int(m2_3part.group(3))
         if 1 <= gun <= 31 and 1 <= ay <= 12:
-            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m2.group(0), "").strip()
+            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m2_3part.group(0), "").strip()
+
+    # 2. Format b: 2 parçalı SADECE / ve - kabul (Hata 1: nokta kabul edilmez!)
+    m2_2part = re.search(r"\[?(\d{1,2})[/\-](\d{1,2})\]?", ilk_40)
+    if m2_2part:
+        gun = int(m2_2part.group(1))
+        ay = int(m2_2part.group(2))
+        yil = datetime.now(TR_TZ).year
+        if 1 <= gun <= 31 and 1 <= ay <= 12:
+            return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m2_2part.group(0), "").strip()
 
     # 3. Format: 16 eylül, 16 eylul 2026 vb.
     aylar = {
@@ -310,46 +801,100 @@ def tarih_ayıkla(metin: str):
             yil = int(m3.group(3)) if m3.group(3) else datetime.now(TR_TZ).year
             return f"{yil:04d}-{ay:02d}-{gun:02d}", temiz_metin.replace(m3.group(0), "").strip()
 
-    # 4. Göreceli Kelimeler: dün / dünün
-    if "dun" in temiz_metin.lower().replace("ü", "u"):
+    # 4. Göreceli Kelimeler: sadece dün / dun tam kelime kontrolü
+    if re.search(r"\b(dün|dun|dünün|dunun)\b", ilk_40, re.IGNORECASE):
         parsed = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         return parsed, temiz_metin
 
     return datetime.now(TR_TZ).strftime("%Y-%m-%d"), temiz_metin
 
+# --- 5. DİNAMİK SİSTEM TALİMATI ---
 
+TEMEL_TALIMAT = """Sen kullanıcının 7/24 gelişimini takip eden, tavizsiz, profesyonel bir Demir İrade Yaşam Mentörü ve Performans Analistisin.
+Görevin, kullanıcının gününe ait aktivitelerini analiz etmek, 7 kategoride değerlendirmek ve karne üretmektir.
 
-# --- 2. SİSTEM TALİMATI ---
-system_instruction = """Sen kullanıcının 7/24 gelişimini takip eden, tavizsiz, profesyonel bir Yaşam Mentörü ve Performans Analistisin.
-Görevin, kullanıcının belirli bir tarihe ait aktivitelerini analiz etmek, 6 kategoride puanlamak ve bu puanların matematiksel ortalamasını çıkarmaktır.
+KATEGORİLER:
+1. BESLENME | 2. SPOR | 3. UYKU | 4. KİŞİSEL GELİŞİM | 5. FİNANS | 6. SOSYAL İLİŞKİLER | 7. YAZILIM
 
-Kategoriler:
-1. BESLENME | 2. SPOR | 3. KİŞİSEL GELİŞİM | 4. FİNANS | 5. SOSYAL İLİŞKİLER | 6. YAZILIM
+DEĞERLENDİRME VE TON İLKELERİ:
+- TAVİZSİZ, DİREKT, NET, GERÇEKÇİ, DİSİPLİNLİ. Gerektiğinde sert.
+- Saldırı DAVRANIŞA, KARARA, EYLEMSİZLİĞE, SONUCA, DİSİPLİNSİZLİĞE yönelir. ASLA karaktere, kişiliğe, değere yönelmez.
+- Dramatizasyon ve kanıtsız yorum yasaktır.
+- VERİ UYDURMA YASAĞI: Kullanıcının söylemediği aktiviteyi, sonucu, sağlık durumunu veya geçmiş bilgiyi UYDURMA. Bilgi yoksa alan 'N/A' olur.
+- ÇIKTI > ZAMAN: Temel soru: 'Bugünün Ana Odağında somut olarak ne ürettin?'. Tamamlanan iş harcanan süreden önemlidir. Kullanıcı yalnızca süre verdiyse olmayan çıktı uydurma, süre üzerinden değerlendir ve çıktı hedefi belirlemesini iste.
+- GROWTH ≠ MAINTENANCE: Ana Odak '🔥 GROWTH MODE', diğer alanlar '🟢 MAINTENANCE MODE' olarak işaretlenir. Ana odak dışındaki bir alanın düşüklüğü tek başına büyük felaket değildir. Ancak ihmal edildiyse dürüstçe söylenir.
+- UYKU DEĞERLENDİRMESİ VE ÇAPA TABLOSU:
+  Kullanıcı saat söylemese bile niteliksel ifadelerden 0-10 puan ver:
+  * 9-10 : dinlenmiş uyandı, düzenli saatte yattı
+  * 7-8  : iyi uyudum / yeterliydi
+  * 5-6  : idare eder, biraz yorgun
+  * 3-4  : kötü uyudum / bölük börçük / geç yattım
+  * 1-2  : neredeyse hiç uyumadım
+  * N/A  : uyku hakkında HİÇBİR şey söylenmedi
+  (Puan ile süre bağımsızdır; süre söylenmedi diye puan atlanmaz.)
+- İSTİSNA PROTOKOLÜ: Girdide ciddi finansal kriz, sakatlık, kaza, yas, ağır hastalık veya acil durum varsa puanlama askıya alınır. Çıktının en başına 'İSTİSNA MODU: AKTİF' yaz, tek bir toparlanma adımı ver.
+- KISITLAR (HARD CONSTRAINT): Aktif kısıtlar HARD CONSTRAINT'tir; hiçbir öneri bunlarla çelişemez. Sağlık ve rehabilitasyonda tıbbi talimat üretme, hekime yönlendir. Girdide yeni kısıt başlarsa 'KISIT EKLE: <kısıt>', kısıt bittiyse 'KISIT KAPAT: <kısıt>' satırı yaz.
+- SÖZ SEÇİMİ: Aşağıdaki SÖZ HAVUZU'ndan günün odağına/durumuna en uygun sözün indeksini 'SÖZ ID: n' olarak belirt. Metni kendin yazma, sadece ID ver.
 
-KRİTİK TALİMATLAR:
-- Kullanıcı o gün tembellik yaptıysa, az çalıştıysa, kötü bir puan getirdiyse (Ortalama puan 6.5'in altındaysa) ASLA yumuşak konuşma! Gerçekleri yüzüne vur, konfor alanını darmadağın et, sert, acımasız ve disiplinli bir dille onu sarsarak motive et. Potansiyelini çöpe attığını hatırlat.
-- Eğer harika çalıştıysa ve yüksek puan aldıysa hakkını ver, disiplinini öv ve çıtayı daha da yukarı koy.
-- Puan formatında "N/A" verdiğin (girdi olmayan) alanları ortalama hesabına dahil etme. Sadece sayısal puan verdiğin alanların aritmetik ortalamasını al.
+ZORUNLU ÇIKTI TEKNİK SATIRLARI (Çıktının başında veya sonunda yer almalıdır):
+SÖZ ID: [0-37 arası bir tam sayı]
+UYKU_SAAT: [Eğer kullanıcı kaç saat uyuduğunu belirttiyse sayı, örn: 7.5; belirtmediyse None]
+PUANLAR: BESLENME=X; SPOR=X; UYKU=X; KİŞİSEL GELİŞİM=X; FİNANS=X; SOSYAL İLİŞKİLER=X; YAZILIM=X (Puanı olmayan alanlara N/A yaz)
+(Gerekirse KISIT EKLE: ... veya KISIT KAPAT: ... veya İSTİSNA MODU: AKTİF)
 
-Çıktı formatın KESİNLİKLE birebir şu şablonda olmalıdır:
+RAPOR ŞABLONU:
+### 📋 GÜNLÜK FEEDBACK & MENTOR ANALİZİ
+[Davranış, karar ve sonuçlara yönelik net değerlendirme]
 
-### 🎯 GÜNLÜK FEEDBACK VE MENTÖR ANALİZİ
-[Buraya performans durumuna göre akıcı değerlendirmeni yaz.]
-
-### 📊 BUGÜNÜN KARNE PUANLARI (X / 10)
-* 🍎 **BESLENME:** X/10 -> [Neden bu puan?]
-* 🏋️ **SPOR:** X/10 -> [Neden bu puan?]
-* 📚 **KİŞİSEL GELİŞİM:** X/10 -> [Neden bu puan?]
-* 💰 **FİNANS:** X/10 -> [Neden bu puan?]
-* 🤝 **SOSYAL İLİŞKİLER:** X/10 -> [Neden bu puan?]
-* 💻 **YAZILIM:** X/10 -> [Neden bu puan?]
+### 📊 BUGÜNÜN KARNE PUANLARI
+* 🍎 Beslenme: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 🏋️ Spor: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 😴 Uyku: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 📚 Kişisel Gelişim: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 💰 Finans: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 🤝 Sosyal İlişkiler: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
+* 💻 Yazılım: X/10 (veya N/A) -> [Gerekçe] [🟢 MAINTENANCE veya 🔥 GROWTH MODE]
 
 ### 🧮 PERFORMANS SKORU
-* 🔢 **TOTAL GÜN PUANI:** [Hesaplanan net ortalama puan, Örn: 7.2]
+🔢 TOTAL GÜN PUANI: [Hesaplama Python tarafından yapılacaktır]
 
-### 🚀 YARIN İÇIN STRATEJİK EMİRLER
-* [Kritik 1-2 madde]
+### 🚀 YARIN İÇİN STRATEJİK EMİRLER
+1. [Günün tamamı için en önemli düzeltme]
+2. [En düşük alan için somut aksiyon]
+3. [İkinci en düşük alan için somut aksiyon]
+
+### 🎯 BUGÜNÜN ÇIKTISI
+[Ana Odak için çıktı odaklı soru. Örn: Yarın ... odağın için gün sonunda hangi somut özelliği/çıktıyı tamamlamış olacaksın?]
 """
+
+def build_system_instruction(ana_odak=None, odak_hedef=None,
+                             onceki_odak=None, onceki_hedef=None, onceki_puan=None,
+                             aktif_kisitlar=None, en_dusuk_alanlar=None) -> str:
+    ekler = []
+    
+    soz_listesi_metni = "\n".join(f"[{i}] {s}" for i, s in enumerate(SOZ_HAVUZU))
+    ekler.append(f"--- SÖZ HAVUZU (Sadece ID seç: 'SÖZ ID: n') ---\n{soz_listesi_metni}")
+    
+    if ana_odak:
+        ekler.append(f"--- GÜNÜN ANA ODAĞI ---\nAlan: {ana_odak} (🔥 GROWTH MODE, 1.6x ağırlık)\nHedef: {odak_hedef or 'Somut çıktı üretimi'}\n(Diğer alanlar 🟢 MAINTENANCE)")
+    else:
+        ekler.append("--- GÜNÜN ANA ODAĞI ---\nKullanıcı bugün için Ana Odak beyan etmedi. KENDİ KAFANA GÖRE ODAK UYDURMA! Tüm alanlar düz 1.0x değerlendirilecek. Raporun sonuna /odak hatırlatması ekle.")
+
+    if onceki_odak:
+        kapanis_notu = f"Önceki odak: {onceki_odak} (Hedef: {onceki_hedef}, Puan: {onceki_puan})"
+        if onceki_puan is not None and onceki_puan < 7.0:
+            kapanis_notu += "\n🚨 BU HEDEF KAPANMADI! Analizde açıkça hatırlat ve yarının hedefini yine aynı alanda ver."
+        ekler.append(f"--- ÖNCEKİ GÜNÜN KAPANIŞ DURUMU ---\n{kapanis_notu}")
+
+    if aktif_kisitlar:
+        kisit_str = "\n".join(f"- {k}" for k in aktif_kisitlar)
+        ekler.append(f"--- AKTİF KISITLAR (HARD CONSTRAINT - ASLA ÇELİŞME!) ---\n{kisit_str}\n(Hiçbir öneri bu kısıtlarla çelişemez; doktor tavsiyesini esas al.)")
+
+    if en_dusuk_alanlar:
+        alan_str = ", ".join(en_dusuk_alanlar)
+        ekler.append(f"--- EN DÜŞÜK ALANLAR ---\nStratejik emirlerde özellikle şu alanlara somut aksiyon ver: {alan_str}")
+
+    return f"{TEMEL_TALIMAT}\n\n" + "\n\n".join(ekler)
 
 async def call_gemini_with_fallback(contents, system_instruction=None):
     primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -360,89 +905,61 @@ async def call_gemini_with_fallback(contents, system_instruction=None):
         "gemini-2.5-flash-lite",
         "gemini-flash-latest"
     ]
-
     seen = set()
     unique_models = []
     for m in models_to_try:
         if m and m not in seen:
             seen.add(m)
             unique_models.append(m)
-
+            
     last_error = None
     for model_name in unique_models:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 config = types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.2,
-                    http_options=types.HttpOptions(timeout=180000)
-                ) if system_instruction else types.GenerateContentConfig(
-                    temperature=0.2,
-                    http_options=types.HttpOptions(timeout=180000)
+                    temperature=0.7
                 )
-                
                 response = await client.aio.models.generate_content(
                     model=model_name,
                     contents=contents,
                     config=config
                 )
-                if response and response.text:
-                    return response
-            except Exception as err:
-                last_error = err
-                err_str = str(err).lower()
-                print(f"[Gemini Uyari]: Model '{model_name}' (deneme {attempt+1}) hata: {err}", file=sys.stderr)
-                if "503" in err_str or "unavailable" in err_str or "429" in err_str or "high demand" in err_str:
-                    await asyncio.sleep(2 * (attempt + 1))
-                else:
+                return response
+            except Exception as e:
+                last_error = e
+                err_msg = str(e).lower()
+                print(f"[Gemini Deneme]: Model {model_name} (Deneme {attempt+1}/3) basarisiz oldu: {e}", file=sys.stderr)
+                if any(x in err_msg for x in ["404", "not found", "deprecated"]):
                     break
+                if any(x in err_msg for x in ["429", "resource_exhausted", "quota", "overloaded", "503"]):
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                break
+    raise last_error
 
-    raise Exception(f"Gemini sunucularındaki geçici yoğunluk (503 High Demand) nedeniyle yanıt alınamadı. Lütfen birkaç saniye sonra tekrar deneyin.")
+# --- 6. TELEGRAM MESAJ YÖNETİCİLERİ ---
 
+async def send_long_message(update: Update, text: str):
+    MAX_LENGTH = 4000
+    for i in range(0, len(text), MAX_LENGTH):
+        await update.message.reply_text(text[i:i+MAX_LENGTH])
 
-async def send_long_message(update: Update, text: str, max_length: int = 4000):
-    # Splits long text into multiple Telegram messages if it exceeds max_length
-
-    if not text:
-        return
-    if len(text) <= max_length:
-        await update.message.reply_text(text)
-        return
-
-    chunks = []
-    current_chunk = ""
-    for line in text.splitlines(keepends=True):
-        if len(current_chunk) + len(line) <= max_length:
-            current_chunk += line
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-            current_chunk = line
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    for chunk in chunks:
-        if chunk.strip():
-            await update.message.reply_text(chunk)
-
-
-# --- 3. TELEGRAM MESAJ YÖNETİMİ ---
 async def start_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # /start komutu verildiginde calisir
     karşılama = (
-        "🎯 **Demir İrade Performans Ajanına Hoş Geldin!**\n\n"
-        "Gelişimini 6 alanda (Beslenme, Spor, Kişisel Gelişim, Finans, Sosyal, Yazılım) takip ediyorum.\n\n"
-        "📥 **Veri Girişi İçin:** Doğrudan bugün ne yaptığını yazıp gönder.\n"
-        "📅 **Geçmiş Gün İçin:** Metnin başına tarih koy. Örn: `[2026-06-01] Bugün yulaf yedim...`\n"
-        "📊 **Grafiğinizi İstediğiniz An Çağırmak İçin:** `grafik` veya `/grafik` yazıp gönderin.\n"
-        "🔍 **Eski Raporu Çağırmak İçin:** `getir YYYY-MM-DD` yazıp gönder."
+        "👑 **Demir İrade Yaşam Mentörüne Hoş Geldiniz!**\n\n"
+        "Ben sizin 7/24 gelişiminizi ve disiplininizi takip eden tavizsiz performans analistinizim.\n\n"
+        "🎯 **Temel Komutlar:**\n"
+        "• `odak <alan>: <hedef>` -> Günlük ana odağınızı ve somut çıktınızı belirler (Örn: `odak yazılım: Sıralama algoritmasını tamamla`)\n"
+        "• `odak` -> Bugünün belirlenmiş odağını sorgular\n"
+        "• `grafik` -> Tüm takvim sürecinizi gösteren gelişim grafiğinizi çizer\n"
+        "• `getir YYYY-MM-DD` -> Belirli bir tarihteki kaydınızı ve mentor analizini getirir\n"
+        "• `sil YYYY-MM-DD` -> İlgili tarihteki kaydı veritabanından siler\n\n"
+        "🎙️ **Kullanım:** Sesli mesaj veya metin olarak gününüzü raporlayın; analiz, karne ve puanınız anında hesaplansın!"
     )
     await update.message.reply_text(karşılama, parse_mode="Markdown")
 
 async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Grafigi dogrudan talep edildiginde olusturup gonderir
-
     grafik_yolu = grafik_olustur()
     if grafik_yolu and os.path.exists(grafik_yolu):
         try:
@@ -458,18 +975,88 @@ async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
 
-async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Telegram'dan gelen her normal mesaji isler
+async def odak_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE, gelen_metin: str):
+    arg = gelen_metin.strip()
+    if arg.lower().startswith("/odak"):
+        arg = arg[5:].strip()
+    elif arg.lower().startswith("odak"):
+        arg = arg[4:].strip()
+    if arg.startswith(":"):
+        arg = arg[1:].strip()
 
+    bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
+
+    if not arg:
+        alan, hedef = odak_getir(bugun)
+        if alan:
+            await update.message.reply_text(
+                f"🎯 **Bugünün Ana Odağı:** {_tr_baslik(alan)}\n"
+                f"🔥 **Mod:** GROWTH MODE (1.6x Ağırlık)\n"
+                f"🎯 **Hedef:** {hedef}\n\n"
+                f"Değiştirmek için: `odak <alan>: <somut hedef>`",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ Bugün için henüz bir Ana Odak belirlenmedi.\n\n"
+                "Belirlemek için: `odak <alan>: <somut hedef>`\n"
+                "Örn: `odak yazılım: Company Discovery Engine flow'unu tamamla`",
+                parse_mode="Markdown"
+            )
+        return
+
+    parcalar = re.split(r"[:\-–]", arg, maxsplit=1)
+    if len(parcalar) < 2 or not parcalar[1].strip():
+        await update.message.reply_text(
+            "⚠️ **Hedefsiz odak kabul edilmez!** Lütfen somut bir çıktı hedefi belirtin.\n\n"
+            "Örnek: `odak yazılım: Company Discovery Engine flow'unu tamamla`",
+            parse_mode="Markdown"
+        )
+        return
+
+    alan_raw = parcalar[0].strip()
+    hedef_raw = parcalar[1].strip()
+    alan_norm = _alan_normalize(alan_raw)
+
+    if not alan_norm:
+        await update.message.reply_text(
+            f"⚠️ **Geçersiz odak alanı ('{alan_raw}')!**\n\n"
+            "Lütfen geçerli 7 alandan birini seçin:\n"
+            "• Beslenme\n• Spor\n• Uyku\n• Kişisel Gelişim\n• Finans\n• Sosyal İlişkiler\n• Yazılım",
+            parse_mode="Markdown"
+        )
+        return
+
+    if odak_kaydet(bugun, alan_norm, hedef_raw):
+        await update.message.reply_text(
+            f"🎯 **Ana Odak Kaydedildi!**\n"
+            f"📅 **Tarih:** {bugun}\n"
+            f"🔥 **Alan:** {_tr_baslik(alan_norm)} (GROWTH MODE - 1.6x Ağırlık)\n"
+            f"🎯 **Hedef:** {hedef_raw}\n\n"
+            f"*Günün sonunda bu hedefin somut çıktısı sorgulanacaktır.*",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("⚠️ Ana odak veritabanına kaydedilirken bir hata oluştu.")
+
+async def odak_komutu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await odak_yoneticisi(update, context, update.message.text)
+
+async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gelen_mesaj = update.message.text
     msg_clean = gelen_mesaj.strip().lower().replace('i̇', 'i').replace('ı', 'i')
     
-    # --- İSTEK ÜZERİNE GRAFİK ÇAĞIRMA (grafik / grafiği göster / grafik getir) ---
+    # 1. ANA ODAK KONTROLÜ (En başta, grafik kontrolünden önce!)
+    if msg_clean == "odak" or msg_clean.startswith("odak ") or msg_clean.startswith("odak:"):
+        await odak_yoneticisi(update, context, gelen_mesaj)
+        return
+
+    # 2. İSTEK ÜZERİNE GRAFİK ÇAĞIRMA
     if msg_clean.startswith("grafik") or "grafik" in msg_clean:
         await grafik_gonder_komutu(update, context)
         return
 
-    # --- GEÇMİŞ TARİH SORGULAMA (getir YYYY-MM-DD / getir bugün / getir dün) ---
+    # 3. GEÇMİŞ TARİH SORGULAMA (getir YYYY-MM-DD / getir bugün / getir dün)
     if msg_clean.startswith("getir"):
         tarih_bul = re.search(r"\d{4}-\d{2}-\d{2}", gelen_mesaj)
         if tarih_bul:
@@ -485,7 +1072,8 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kayit = spesifik_tarih_getir(istenen_tarih)
             if kayit:
                 girdi, analiz, total_puan = kayit
-                yanit = f"📅 **TARİH:** {istenen_tarih}\n**Sizin Notunuz:** '{girdi}'\n\n{analiz}\n\n🔢 **NET SKOR:** {total_puan}/10"
+                puan_gosterim = f"{total_puan}/10" if total_puan is not None else "N/A"
+                yanit = f"📅 **TARİH:** {istenen_tarih}\n**Sizin Notunuz:** '{girdi}'\n\n{analiz}\n\n🔢 **NET SKOR:** {puan_gosterim}"
                 await send_long_message(update, yanit)
             else:
                 await update.message.reply_text(f"❌ Hafızamda {istenen_tarih} tarihli bir kayıt bulamadım.")
@@ -493,7 +1081,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("💡 Doğru format: `getir YYYY-MM-DD` veya `getir bugün` / `getir dün`")
         return
 
-    # --- VERİ SİLME KOMUTU (sil YYYY-MM-DD / sil DD.MM / sil bugün / sil dün / sil son) ---
+    # 4. VERİ SİLME KOMUTU (sil YYYY-MM-DD / sil DD.MM / sil bugün / sil dün / sil son)
     if msg_clean.startswith("sil"):
         sil_arg = gelen_mesaj[3:].strip()
         sil_clean = sil_arg.lower().replace('i̇', 'i').replace('ı', 'i')
@@ -507,7 +1095,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row = cursor.fetchone()
                 conn.close()
                 silinecek_tarih = row[0] if row else None
-            except Exception as e:
+            except Exception:
                 silinecek_tarih = None
         elif "bugun" in sil_clean:
             silinecek_tarih = datetime.now(TR_TZ).strftime("%Y-%m-%d")
@@ -516,14 +1104,13 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif sil_arg:
             parsed_date, _ = tarih_ayıkla(sil_arg)
             silinecek_tarih = parsed_date
-        else:
-            silinecek_tarih = None
 
         if silinecek_tarih:
             try:
                 conn, p = db_manager.get_connection()
                 cursor = conn.cursor()
                 cursor.execute(f"DELETE FROM gunluk_hafiza WHERE tarih = {p}", (silinecek_tarih,))
+                cursor.execute(f"DELETE FROM gun_odak WHERE tarih = {p}", (silinecek_tarih,))
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -538,58 +1125,95 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             photo=photo_file, 
                             caption=f"🗑️ **{silinecek_tarih}** tarihli kayıtlar silindi ve grafiğiniz güncellendi!"
                         )
-                except Exception as photo_err:
-                    print(f"[Grafik Hata]: sil photo hatasi: {photo_err}", file=sys.stderr)
+                except Exception:
                     await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından silindi!")
             else:
-                await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından başarıyla silindi!")
+                await update.message.reply_text(f"🗑️ **{silinecek_tarih}** tarihli tüm kayıtlar veritabanından silindi!")
         else:
-            await update.message.reply_text("💡 **Doğru Silme Formatları:**\n• `sil YYYY-MM-DD` (Örn: sil 2026-07-23)\n• `sil bugün` veya `sil dün`\n• `sil son` (En son eklenen kaydı siler)")
+            await update.message.reply_text("💡 **Doğru Silme Formatları:**\n• `sil YYYY-MM-DD`\n• `sil bugün` veya `sil dün`\n• `sil son`")
         return
 
-    # --- NORMAL GÜNLÜK RAPOR GİRİŞİ ---
-    await update.message.reply_text("⚡ Verileriniz işleniyor, Gemini analizi başlatıldı...")
+    # 5. NORMAL GÜNLÜK RAPOR GİRİŞİ
+    await update.message.reply_text("⚡ Verileriniz işleniyor, Demir İrade analizi başlatıldı...")
     
     try:
         hedef_tarih, temiz_girdi = tarih_ayıkla(gelen_mesaj)
+
+        # Madde 4: Satır içi "Ana Odak: X" kontrolü
+        m_inline = re.search(r"Ana Odak:\s*([^\n\-–:]+)(?:[\-–:]\s*([^\n]+))?", temiz_girdi, re.IGNORECASE)
+        if m_inline:
+            inline_alan = _alan_normalize(m_inline.group(1).strip())
+            if inline_alan:
+                inline_hedef = (m_inline.group(2) or "Günlük Odak Hedefi").strip()
+                odak_kaydet(hedef_tarih, inline_alan, inline_hedef)
+
+        ana_odak, odak_hedef = odak_getir(hedef_tarih)
+        onceki_odak, onceki_hedef, onceki_puan = onceki_odak_getir(hedef_tarih)
+        aktif_kisitlar = aktif_kisitlari_getir()
+
+        dinamik_instruction = build_system_instruction(
+            ana_odak=ana_odak,
+            odak_hedef=odak_hedef,
+            onceki_odak=onceki_odak,
+            onceki_hedef=onceki_hedef,
+            onceki_puan=onceki_puan,
+            aktif_kisitlar=aktif_kisitlar
+        )
+
         gecmis_konsept = son_kayitlari_getir(limit=5)
         tarih_bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         
         prompt = (
-            f"🚨 KRİTİK TARİH BİLGİSİ: Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}.\n"
-            f"Hedeflenen Kayıt Tarihi KESİNLİKLE: {hedef_tarih}\n"
-            f"Geçmiş performanslar eski aylara (Haziran/Temmuz 06/07 vb.) ait olabilir. "
-            f"Geçmiş kayıtlardaki eski tarihlere bakarak {hedef_tarih} tarihini KESİNLİKLE değiştirme!\n\n"
-            f"Kullanıcının Bugünkü Yeni Girdisi: {temiz_girdi}\n\n"
-            f"Geçmiş Performanslar (Sadece referans gelişim kıyası içindir):\n{gecmis_konsept}\n\n"
-            f"Analiz et, karne üret."
+            f"🚨 GÜNCEL TARİH VE HEDEF BİLGİSİ:\n"
+            f"Bugünün güncel Türkiye tarihi: {tarih_bugun}.\n"
+            f"Hedeflenen Kayıt Tarihi KESİNLİKLE: {hedef_tarih}\n\n"
+            f"Kullanıcının Yeni Girdisi:\n{temiz_girdi}\n\n"
+            f"Geçmiş Performanslar (Gelişim kıyası referansı):\n{gecmis_konsept}\n\n"
+            f"Talimatlara uygun olarak analizi, teknik satırları (SÖZ ID, PUANLAR vb.) ve karne formatını eksiksiz üret."
         )
 
-        response = await call_gemini_with_fallback(contents=prompt, system_instruction=system_instruction)
+        response = await call_gemini_with_fallback(contents=prompt, system_instruction=dinamik_instruction)
+        raw_analiz = response.text
 
-        
-        analiz_sonucu = response.text
-        await send_long_message(update, analiz_sonucu)
-        
-        # Puan ayıklama ve veritabanı kaydı
-        puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_sonucu)
-        
-        total_puan = None
-        if puan_bulucu:
-            try:
-                total_puan = float(puan_bulucu.group(1))
-            except ValueError:
-                total_puan = 5.0
-        else:
-            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_sonucu) if x != '10']
-            if puanlar:
-                total_puan = sum(puanlar) / len(puanlar)
-        
-        if total_puan is None:
-            total_puan = 5.0
-            
-        hafizaya_kaydet(hedef_tarih, temiz_girdi, analiz_sonucu, total_puan)
-        
+        # Kısıt yönetimi ayrıştırma
+        m_kisit_ekle = re.search(r"KISIT EKLE:\s*([^\n]+)", raw_analiz, re.IGNORECASE)
+        if m_kisit_ekle:
+            kisit_ekle(m_kisit_ekle.group(1).strip(), hedef_tarih)
+
+        m_kisit_kapat = re.search(r"KISIT KAPAT:\s*([^\n]+)", raw_analiz, re.IGNORECASE)
+        if m_kisit_kapat:
+            kisit_kapat(m_kisit_kapat.group(1).strip(), hedef_tarih)
+
+        # İstisna modu kontrolü
+        istisna = bool(re.search(r"İSTİSNA MODU:\s*AKTİF|ISTISNA MODU:\s*AKTIF", raw_analiz, re.IGNORECASE))
+
+        # Uyku süresi ayrıştırma
+        uyku_saat = ayikla_uyku_saat(temiz_girdi, raw_analiz)
+
+        # Puan ayrıştırma ve skor hesabı
+        puanlar = puanlari_ayristir(raw_analiz)
+        total_puan = None if istisna else agirlikli_skor(puanlar, ana_odak)
+
+        # Günün sözü ve trend
+        soz_blogu = gunun_sozu(raw_analiz, hedef_tarih)
+        trend_metni = trend_ozeti(hedef_tarih)
+
+        # Raporu birleştir (Madde 6: Rapor temizliği dahil)
+        son_rapor = raporu_birlestir(raw_analiz, soz_blogu, total_puan, trend_metni, istisna)
+        await send_long_message(update, son_rapor)
+
+        # Veritabanına kaydet
+        detay = {
+            "uyku_saat": uyku_saat,
+            "ana_odak": ana_odak,
+            "odak_hedef": odak_hedef,
+            "puanlar": puanlar,
+            "istisna_modu": 1 if istisna else 0
+        }
+        kayit_ok = hafizaya_kaydet(hedef_tarih, temiz_girdi, son_rapor, total_puan, detay=detay)
+        if not kayit_ok:
+            await update.message.reply_text("⚠️ Analiz üretildi ancak veritabanına kaydedilemedi.")
+
         # Grafik oluştur ve gönder
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
@@ -609,10 +1233,7 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Analiz sırasında bir hata oluştu: {str(e)}")
 
-
 async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Sesli mesajlari veya ses dosyalarini indirir, transkribe eder ve Gemini ile analiz eder
-
     ses = update.message.voice or update.message.audio
     if not ses:
         return
@@ -621,9 +1242,8 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Gemini API Key tanımlı değil, ses analizi yapılamaz!")
         return
         
-    await update.message.reply_text("🎙️ Ses kaydınız alındı. Transkripsiyon ve Gemini analizi başlatılıyor...")
+    await update.message.reply_text("🎙️ Ses kaydınız alındı. Transkripsiyon ve Demir İrade analizi başlatılıyor...")
     
-    # MIME türünü dinamik belirle
     detected_mime = getattr(ses, "mime_type", None) or "audio/ogg"
     ext = "ogg"
     if "mp3" in detected_mime: ext = "mp3"
@@ -633,11 +1253,9 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
     audio_path = f"ses_kaydi_{update.message.message_id}.{ext}"
     
     try:
-        # Ses dosyasını indir
         file_obj = await ses.get_file(read_timeout=120, write_timeout=120, connect_timeout=60)
         await file_obj.download_to_drive(audio_path)
         
-        # Dosyayı Gemini Files API'ye yükle (asenkron non-blocking)
         print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime})")
         media_file = await client.aio.files.upload(
             file=audio_path, 
@@ -650,51 +1268,50 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         tarih_bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         tarih_dun = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         gecmis_konsept = son_kayitlari_getir(limit=5)
+        aktif_kisitlar = aktif_kisitlari_getir()
+        
+        dinamik_instruction = build_system_instruction(
+            aktif_kisitlar=aktif_kisitlar
+        )
         
         prompt = (
             f"🚨 KRİTİK TARİH VE ZAMAN DİREKTİFİ:\n"
-            f"Şu an EYLÜL ayındayız! Bugüne ait güncel Türkiye tarihi = {tarih_bugun}, dün = {tarih_dun}.\n\n"
-            f"HEDEF TARİH SEÇİM HİYERARŞİSİ (ÇOK ÖNEMLİ!):\n"
-            f"1. **BİRİNCİL ÖNCELİK (Kullanıcının Sözlü Tarih İfadesi):** Eğer kullanıcı ses kaydında açıkça bir tarih veya gün söylediyse (Örn: '16 Eylül', '16.09', '14 Eylül', 'dün' vb.), hedef tarihi KESİNLİKLE kullanıcının kaydında söylediği o tarihe göre ayarla! (Örn: '16 Eylül' veya '16.09' dediyse KESİNLİKLE 'TARİH: 2026-09-16' yaz).\n"
-            f"2. **İKİNCİL ÖNCELİK (Göreceli İfadeler veya Tarih Belirtilmeme):** Kullanıcı 'dün' dediyse {tarih_dun}, 'bugün' dediyse veya hiç tarih söylemediyse {tarih_bugun} olarak belirle.\n"
-            f"3. **YASAK:** Aşağıdaki geçmiş kayıtlarda eski aylar (Haziran/Temmuz 06/07) var diye kullanıcının söylediği tarihi değiştirme veya eski ayları hedef tarih yapma!\n\n"
-            f"Geçmiş Performanslar (Sadece referans gelişim kıyası içindir):\n{gecmis_konsept}\n\n"
+            f"Bugünün güncel Türkiye tarihi = {tarih_bugun}, dün = {tarih_dun}.\n\n"
+            f"HEDEF TARİH SEÇİMİ:\n"
+            f"1. Eğer kullanıcı ses kaydında açıkça bir tarih söylediyse (Örn: '16 Eylül', '16/09', 'dün') hedef tarihi ona göre belirle.\n"
+            f"2. Belirtilmediyse {tarih_bugun} kabul et.\n\n"
+            f"Geçmiş Performanslar:\n{gecmis_konsept}\n\n"
             f"Görevlerin:\n"
-            f"1. Ekteki ses kaydını dinle ve kelimesi kelimesine TÜRKÇE transkripsiyonunu (dökümünü) yap.\n"
-            f"2. Ses kaydındaki tarihi analiz et. Kullanıcı açıkça bir tarih söylediyse (Örn: '16 Eylül', '16.09') hedef tarihi o tarihe çevir! (Örn: 2026-09-16).\n"
-            f"3. Bu dökümü analiz edip karne üret.\n\n"
+            f"1. Ses kaydının tam Türkçe transkripsiyonunu (dökümünü) yap.\n"
+            f"2. Dökümü analiz edip karne, teknik satırlar ve değerlendirme üret.\n\n"
             f"YANIT FORMATIN KESİNLİKLE ŞÖYLE OLMALIDIR:\n"
-            f"TARİH: [Belirlenen hedef tarih, format: YYYY-MM-DD]\n"
+            f"TARİH: [YYYY-MM-DD formatında hedef tarih]\n"
             f"DÖKÜM:\n[Ses kaydının tam Türkçe dökümü]\n\n"
             f"ANALİZ:\n[Standart günlük mentor analiziniz ve karneniz]\n"
         )
         
-        response = await call_gemini_with_fallback(contents=[media_file, prompt], system_instruction=system_instruction)
-
-            
+        response = await call_gemini_with_fallback(contents=[media_file, prompt], system_instruction=dinamik_instruction)
         full_text = response.text
         
-        # Gemini Files API'den dosyayı temizle
         try:
             await client.aio.files.delete(name=media_file.name)
         except Exception as file_del_err:
             print(f"[Uyari]: Gemini Files silinemedi: {file_del_err}", file=sys.stderr)
             
-        # Yanıtı parçala
         hedef_tarih = tarih_bugun
         döküm_bolumu = ""
         analiz_bolumu = ""
         
         if "DÖKÜM:" in full_text and "ANALİZ:" in full_text:
-            parts = full_text.split("ANALİZ:")
+            parts = full_text.split("ANALİZ:", 1)
             döküm_bolumu = parts[0].replace("DÖKÜM:", "").strip()
             analiz_bolumu = parts[1].strip()
         else:
             döküm_bolumu = "Döküm ayıklanamadı."
             analiz_bolumu = full_text
 
-        # Tarih Belirleme Hiyerarşisi:
-        # 1. Öncelik: Transkripsiyon (Döküm) metninde kullanıcının bizzat söylediği bir tarih var mı?
+        döküm_bolumu = re.sub(r"TARİH:\s*[^\n]+\n?", "", döküm_bolumu).strip()
+
         sozlu_tarih, _ = tarih_ayıkla(döküm_bolumu)
         tarih_bulucu = re.search(r"TARİH:\s*([^\n]+)", full_text)
         
@@ -704,40 +1321,49 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             raw_tarih = tarih_bulucu.group(1).strip()
             parsed_date, _ = tarih_ayıkla(raw_tarih)
             if parsed_date:
-                if (parsed_date.startswith("2026-07") or parsed_date.startswith("2026-06")) and ("temmuz" not in full_text.lower() and "haziran" not in full_text.lower()):
-                    hedef_tarih = tarih_bugun
-                else:
-                    hedef_tarih = parsed_date
+                hedef_tarih = parsed_date
 
-            
-        # Kullanıcıya yanıtı gönder (Döküm ve Analizi ayrı ayrı güvenle parçala)
+        m_inline = re.search(r"Ana Odak:\s*([^\n\-–:]+)(?:[\-–:]\s*([^\n]+))?", döküm_bolumu, re.IGNORECASE)
+        if m_inline:
+            inline_alan = _alan_normalize(m_inline.group(1).strip())
+            if inline_alan:
+                inline_hedef = (m_inline.group(2) or "Günlük Odak Hedefi").strip()
+                odak_kaydet(hedef_tarih, inline_alan, inline_hedef)
+
+        ana_odak, odak_hedef = odak_getir(hedef_tarih)
+
+        m_kisit_ekle = re.search(r"KISIT EKLE:\s*([^\n]+)", analiz_bolumu, re.IGNORECASE)
+        if m_kisit_ekle:
+            kisit_ekle(m_kisit_ekle.group(1).strip(), hedef_tarih)
+
+        m_kisit_kapat = re.search(r"KISIT KAPAT:\s*([^\n]+)", analiz_bolumu, re.IGNORECASE)
+        if m_kisit_kapat:
+            kisit_kapat(m_kisit_kapat.group(1).strip(), hedef_tarih)
+
+        istisna = bool(re.search(r"İSTİSNA MODU:\s*AKTİF|ISTISNA MODU:\s*AKTIF", analiz_bolumu, re.IGNORECASE))
+        uyku_saat = ayikla_uyku_saat(döküm_bolumu, analiz_bolumu)
+        puanlar = puanlari_ayristir(analiz_bolumu)
+        total_puan = None if istisna else agirlikli_skor(puanlar, ana_odak)
+
+        soz_blogu = gunun_sozu(analiz_bolumu, hedef_tarih)
+        trend_metni = trend_ozeti(hedef_tarih)
+        son_analiz = raporu_birlestir(analiz_bolumu, soz_blogu, total_puan, trend_metni, istisna)
+
         if döküm_bolumu and döküm_bolumu != "Döküm ayıklanamadı.":
             await send_long_message(update, f"✍️ **SES DÖKÜMÜ ({format_date_tr(hedef_tarih)}):**\n\"{döküm_bolumu}\"")
-            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ:**\n{analiz_bolumu}")
-        else:
-            await send_long_message(update, f"🎯 **MENTÖR ANALİZİ ({format_date_tr(hedef_tarih)}):**\n{analiz_bolumu}")
-        
-        # Puan ayıkla
-        puan_bulucu = re.search(r"TOTAL GÜN PUANI:\s*\*?([0-9]*\.?[0-9]+)", analiz_bolumu)
-        total_puan = None
-        if puan_bulucu:
-            try:
-                total_puan = float(puan_bulucu.group(1))
-            except ValueError:
-                total_puan = 5.0
-        else:
-            puanlar = [float(x) for x in re.findall(r"([0-9\.]+)\s*/\s*10", analiz_bolumu) if x != '10']
-            if puanlar:
-                total_puan = sum(puanlar) / len(puanlar)
+        await send_long_message(update, f"🎯 **MENTÖR ANALİZİ ({format_date_tr(hedef_tarih)}):**\n{son_analiz}")
 
+        detay = {
+            "uyku_saat": uyku_saat,
+            "ana_odak": ana_odak,
+            "odak_hedef": odak_hedef,
+            "puanlar": puanlar,
+            "istisna_modu": 1 if istisna else 0
+        }
+        kayit_ok = hafizaya_kaydet(hedef_tarih, f"[Ses Kaydı] {döküm_bolumu}", son_analiz, total_puan, detay=detay)
+        if not kayit_ok:
+            await update.message.reply_text("⚠️ Analiz üretildi ancak veritabanına kaydedilemedi.")
         
-        if total_puan is None:
-            total_puan = 5.0
-            
-        # Veritabanına kaydet
-        hafizaya_kaydet(hedef_tarih, f"[Ses Kaydı] {döküm_bolumu}", analiz_bolumu, total_puan)
-        
-        # Grafik oluştur ve gönder
         grafik_yolu = grafik_olustur()
         if grafik_yolu and os.path.exists(grafik_yolu):
             try:
@@ -754,26 +1380,25 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
-
         await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
         
     finally:
-        # Geçici ses dosyasını temizle
         if os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
             except Exception as file_err:
                 print(f"[Uyari]: Geçici ses dosyası silinemedi: {file_err}", file=sys.stderr)
 
-
-# --- 4. ANA ÇALIŞTIRICI SİSTEM ---
+# --- 7. ANA ÇALIŞTIRICI SİSTEM ---
 if __name__ == "__main__":
     veritabanini_hazirla()
     port = int(os.environ.get("PORT", 0))
     
     app = Application.builder().token(TELEGRAM_TOKEN).read_timeout(120).write_timeout(120).connect_timeout(60).get_updates_read_timeout(120).build()
+    
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(CommandHandler("grafik", grafik_gonder_komutu))
+    app.add_handler(CommandHandler("odak", odak_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, ses_mesaj_yoneticisi))
     
