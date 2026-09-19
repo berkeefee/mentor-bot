@@ -646,21 +646,24 @@ def grafik_olustur():
     if not valid_dates:
         return False
 
-    min_date = min(valid_dates)
-    max_date = max(max(valid_dates), datetime.now(TR_TZ).date())
+    today = datetime.now(TR_TZ).date()
+    recent_start = today - timedelta(days=9)
 
-    all_dates = []
-    curr = min_date
-    while curr <= max_date:
-        all_dates.append(curr)
+    # 1. Geçmiş tarihler (Son 10 gün öncesi, yalnızca kaydı olan günler)
+    past_dates = [datetime.strptime(t, "%Y-%m-%d").date() for t in sorted(kayitlar.keys()) if datetime.strptime(t, "%Y-%m-%d").date() < recent_start]
+
+    # 2. Son 10 gün (Takvimsel olarak her gün eksiksiz: recent_start .. today)
+    recent_dates = []
+    curr = recent_start
+    while curr <= today:
+        recent_dates.append(curr)
         curr += timedelta(days=1)
 
-    tarih_str_list = [d.strftime("%d.%m") for d in all_dates]
-    
+    display_dates = past_dates + recent_dates
+
     raw_scores = []
     is_exception_list = []
-    
-    for d in all_dates:
+    for d in display_dates:
         d_str = d.strftime("%Y-%m-%d")
         if d_str in kayitlar:
             puan, istisna = kayitlar[d_str]
@@ -678,7 +681,7 @@ def grafik_olustur():
 
     trend_puanlari = [s for s in raw_scores if s is not None]
     genel_ortalama = (sum(trend_puanlari) / len(trend_puanlari)) if trend_puanlari else 5.0
-    
+
     plot_scores = []
     for i, s in enumerate(raw_scores):
         if s is not None:
@@ -687,89 +690,88 @@ def grafik_olustur():
             prev_s = plot_scores[i-1] if i > 0 else genel_ortalama
             plot_scores.append(prev_s)
 
-    x_indices = list(range(len(all_dates)))
+    x_indices = list(range(len(display_dates)))
+    split_idx = len(past_dates)
 
     plt.style.use('dark_background')
-    fig, ax = plt.subplots(figsize=(11, 5.5), facecolor='#121214')
+    fig, ax = plt.subplots(figsize=(13, 6), facecolor='#121214')
     ax.set_facecolor('#18181c')
-
-    split_idx = max(0, len(x_indices) - 10)
 
     # 1. Önceki Günler: Yeşil Performans Trend Çizgisi & Dolgusu
     if split_idx > 0:
-        past_x = x_indices[:split_idx + 1]
-        past_y = plot_scores[:split_idx + 1]
+        past_x = x_indices[:split_idx]
+        past_y = plot_scores[:split_idx]
         ax.plot(past_x, past_y, color='#10b981', linewidth=2.0, label='Geçmiş Performans Trendi')
-        ax.fill_between(past_x, past_y, color='#10b981', alpha=0.08)
-        
-        # Geçmiş normal noktalar
-        past_norm_x = [x for x in x_indices[:split_idx] if not is_exception_list[x]]
+        ax.fill_between(past_x, past_y, color='#10b981', alpha=0.07)
+        past_norm_x = [x for x in past_x if not is_exception_list[x]]
         past_norm_y = [plot_scores[x] for x in past_norm_x]
         if past_norm_x:
             ax.scatter(past_norm_x, past_norm_y, color='#10b981', edgecolor='#ffffff', s=25, linewidth=1.2, zorder=3)
+        
+        last_past = split_idx - 1
+        if raw_scores[last_past] is not None and raw_scores[last_past] > 0:
+            ax.annotate(f"{raw_scores[last_past]}", (last_past, plot_scores[last_past]),
+                        textcoords='offset points', xytext=(0, 10), ha='center',
+                        fontsize=9.5, fontweight='bold', color='#10b981')
 
     # 2. Son 10 Gün: Parlak Mavi Çizgi & Dolgu & Vurgulu Noktalar
     recent_x = x_indices[split_idx:]
     recent_y = plot_scores[split_idx:]
-    ax.plot(recent_x, recent_y, color='#0284c7', linewidth=3.2, label='Son 10 Gün (Güncel Veriler)')
-    ax.fill_between(recent_x, recent_y, color='#0284c7', alpha=0.12)
 
-    # Son 10 gün normal noktaları (Mavi)
+    connect_x = [x_indices[split_idx-1], recent_x[0]] if split_idx > 0 else recent_x
+    connect_y = [plot_scores[split_idx-1], recent_y[0]] if split_idx > 0 else recent_y
+    ax.plot(connect_x, connect_y, color='#0284c7', linewidth=2.2, linestyle=':')
+
+    ax.plot(recent_x, recent_y, color='#0284c7', linewidth=3.5, label='Son 10 Gün (Güncel Veriler)')
+    ax.fill_between(recent_x, recent_y, color='#0284c7', alpha=0.15)
+
     recent_norm_x = [x for x in recent_x if not is_exception_list[x]]
     recent_norm_y = [plot_scores[x] for x in recent_norm_x]
     if recent_norm_x:
-        ax.scatter(recent_norm_x, recent_norm_y, color='#38bdf8', edgecolor='#ffffff', s=60, linewidth=1.8, zorder=5)
+        ax.scatter(recent_norm_x, recent_norm_y, color='#38bdf8', edgecolor='#ffffff', s=70, linewidth=2.0, zorder=5)
 
-    # 3. İstisna Noktaları (Gri)
-    exc_x = [x for x, exc in zip(x_indices, is_exception_list) if exc]
-    exc_y = [plot_scores[x] for x in exc_x]
-    if exc_x:
-        ax.scatter(exc_x, exc_y, color='#6b7280', edgecolor='#9ca3af', s=55, linewidth=1.5, zorder=6, label='İstisna Günü')
-
-    ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
-    ax.tick_params(colors='#a1a1aa', labelsize=9)
-
-    # Puan etiketlerini akıllı yerleştir (Son 10 gün mavi, Eylül'deki diğer kayıtlı günler yeşil)
-    for i in x_indices:
-        d = all_dates[i]
-        if i in recent_x:
-            if is_exception_list[i]:
-                lbl = "İstisna"
-                c = '#9ca3af'
-            else:
-                lbl = f"{raw_scores[i]}"
-                c = '#38bdf8'
-            ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
-                        xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
-        elif raw_scores[i] is not None and raw_scores[i] > 0 and d >= datetime(2026, 9, 1).date():
+    # Son 10 gün puan etiketleri
+    for i in recent_x:
+        if is_exception_list[i]:
+            lbl = "İstisna"
+            c = '#9ca3af'
+        else:
             lbl = f"{raw_scores[i]}"
-            c = '#10b981'
-            ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
-                        xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
+            c = '#38bdf8' if raw_scores[i] > 0 else '#64748b'
+        ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
+                    xytext=(0, 11), ha='center', fontsize=9.5, fontweight='bold', color=c)
 
-    step = max(1, len(x_indices) // 14)
-    tick_positions = x_indices[::step]
-    if x_indices[-1] not in tick_positions:
-        tick_positions.append(x_indices[-1])
+    # 3. Tarih Etiketleri (Son 10 günün her gününe net tarih!)
+    past_ticks = list(range(0, split_idx, max(1, split_idx // 6)))
+    if split_idx > 0 and (split_idx - 1) not in past_ticks:
+        past_ticks.append(split_idx - 1)
 
-    tick_labels = [tarih_str_list[i] for i in tick_positions]
-    ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, rotation=30, color='#e4e4e7')
+    recent_ticks = list(recent_x)
+    all_ticks = sorted(list(set(past_ticks + recent_ticks)))
 
-    ax.set_title('Gelişim ve Performans Trend Grafiği (Son 10 Gün Vurgulu Görünüm)', color='#f4f4f5', fontsize=13, fontweight='bold', pad=18)
+    tick_labels = [display_dates[i].strftime("%d.%m") for i in all_ticks]
+    ax.set_xticks(all_ticks)
+    ax.set_xticklabels(tick_labels, rotation=35, color='#e4e4e7', fontsize=9.5)
+
+    if split_idx > 0:
+        ax.axvline(x=split_idx - 0.5, color='#334155', linestyle='--', linewidth=1.5, alpha=0.8)
+        ax.text(split_idx + (len(recent_x)-1)/2, 10.5, 'SON 10 GÜN DETAYLI', ha='center', color='#38bdf8', fontsize=9.5, fontweight='bold')
+
+    ax.set_title('Gelişim ve Performans Trend Grafiği (Son 10 Gün Detaylı Görünüm)', color='#f4f4f5', fontsize=14, fontweight='bold', pad=20)
     ax.set_ylabel('Puan (10 Üzerinden)', color='#a1a1aa', fontsize=11, labelpad=10)
-    ax.set_ylim(-0.5, 11)
+    ax.set_ylim(-0.5, 11.2)
 
     for spine in ['top', 'right', 'left', 'bottom']:
         ax.spines[spine].set_visible(False)
 
     legend = ax.legend(facecolor='#18181c', edgecolor='#27272a', labelcolor='#e4e4e7', loc='upper left')
     legend.get_frame().set_linewidth(1.0)
+    ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
 
     plt.tight_layout()
 
     grafik_yolu = "ilerleme_grafigi.png"
-    plt.savefig(grafik_yolu, dpi=150, facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.savefig(grafik_yolu, dpi=160, facecolor=fig.get_facecolor(), edgecolor='none')
     plt.close()
     return grafik_yolu
 
