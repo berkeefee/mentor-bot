@@ -729,16 +729,23 @@ def grafik_olustur():
     ax.grid(True, linestyle=':', color='#27272a', alpha=0.7)
     ax.tick_params(colors='#a1a1aa', labelsize=9)
 
-    # Son 10 gün puan etiketleri (Mavi)
-    for i in recent_x:
-        if is_exception_list[i]:
-            lbl = "İstisna"
-            c = '#9ca3af'
-        else:
+    # Puan etiketlerini akıllı yerleştir (Son 10 gün mavi, Eylül'deki diğer kayıtlı günler yeşil)
+    for i in x_indices:
+        d = all_dates[i]
+        if i in recent_x:
+            if is_exception_list[i]:
+                lbl = "İstisna"
+                c = '#9ca3af'
+            else:
+                lbl = f"{raw_scores[i]}"
+                c = '#38bdf8'
+            ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
+                        xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
+        elif raw_scores[i] is not None and raw_scores[i] > 0 and d >= datetime(2026, 9, 1).date():
             lbl = f"{raw_scores[i]}"
-            c = '#38bdf8'
-        ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
-                    xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
+            c = '#10b981'
+            ax.annotate(lbl, (i, plot_scores[i]), textcoords='offset points',
+                        xytext=(0, 10), ha='center', fontsize=9.0, fontweight='bold', color=c)
 
     step = max(1, len(x_indices) // 14)
     tick_positions = x_indices[::step]
