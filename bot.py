@@ -108,6 +108,31 @@ def _alan_normalize(metin: str) -> str | None:
             return v
     return None
 
+def metinden_odak_ayikla(metin: str) -> tuple[str | None, str | None]:
+    """
+    Kullanıcı mesajı veya ses dökümünden 'Ana Odak' veya 'Ana Hedef' beyanını yakalar.
+    Örnekler:
+    - 'Ana Odak: Yazılım - botu tamamla'
+    - 'Bugünkü hedefim spor: 10k adım'
+    - 'Ana hedef yazılım: discovery engine'
+    - 'Hedefim: finans - borsa analizi'
+    """
+    if not metin:
+        return (None, None)
+    
+    # 1. Regex ile açık beyanları ara
+    pattern = r"(?:(?:bugunku|bugünkü)\s+)?(?:ana\s+)?(?:odak|hedef)(?:im)?(?:imiz)?[:\s\-–]+([^\n\-–:,\.]+)(?:[:\-–]\s*([^\n]+))?"
+    for m in re.finditer(pattern, metin, re.IGNORECASE):
+        ham_alan = m.group(1).strip()
+        alan_norm = _alan_normalize(ham_alan)
+        if alan_norm:
+            ham_hedef = (m.group(2) or "").strip()
+            if not ham_hedef:
+                ham_hedef = f"{_tr_baslik(alan_norm)} Gelişim Hedefi"
+            return (alan_norm, ham_hedef)
+    
+    return (None, None)
+
 SOZ_HAVUZU = [
     "İstemediğin şeyleri yapabildiğin zaman disiplin sahibi olursun.",
     "Olayları kontrol edebildiğin zaman disiplin sahibi olursun.",
@@ -517,27 +542,57 @@ def ayikla_uyku_saat(metin: str, gemini_yanit: str = "") -> float | None:
             pass
     return None
 
-def trend_ozeti(tarih: str) -> str:
+def trend_ozeti(tarih: str, bugun_kaydi: dict = None) -> str:
     try:
         conn, p = db_manager.get_connection()
         cursor = conn.cursor()
+        
+        # Son 14 takvim günü içerisindeki kayıtları getir (aradaki büyük boşluklar trendi bozmasın)
+        try:
+            dt_hedef = datetime.strptime(tarih, "%Y-%m-%d").date()
+            dt_baslangic = (dt_hedef - timedelta(days=14)).strftime("%Y-%m-%d")
+        except Exception:
+            dt_baslangic = "2000-01-01"
+
         cursor.execute(
             f"""SELECT tarih, total_puan, uyku_saat, ana_odak, puanlar_json, istisna_modu
                 FROM gunluk_hafiza
-                WHERE tarih <= {p} AND (istisna_modu IS NULL OR istisna_modu = 0)
-                ORDER BY tarih DESC LIMIT 7""",
-            (tarih,)
+                WHERE tarih >= {p} AND tarih <= {p} AND (istisna_modu IS NULL OR istisna_modu = 0)
+                ORDER BY tarih ASC""",
+            (dt_baslangic, tarih)
         )
-        rows = cursor.fetchall()
+        db_rows = cursor.fetchall()
         conn.close()
 
-        if len(rows) < 4:
+        # Kayıtları tarihe göre bir sözlükte topla
+        kayitlar_dict = {}
+        for r in db_rows:
+            kayitlar_dict[r[0]] = {
+                "tarih": r[0],
+                "total_puan": r[1],
+                "uyku_saat": r[2],
+                "ana_odak": r[3],
+                "puanlar_json": r[4],
+                "istisna_modu": r[5]
+            }
+
+        # Eğer bugünün kaydı henüz DB'ye yazılmadıysa veya güncellendiyse ekle
+        if bugun_kaydi and bugun_kaydi.get("tarih") == tarih:
+            if not bugun_kaydi.get("istisna_modu"):
+                kayitlar_dict[tarih] = bugun_kaydi
+
+        # Tarihe göre sıralı son 7 kaydı al
+        sirali_tarihler = sorted(kayitlar_dict.keys())
+        son_tarihler = sirali_tarihler[-7:]
+        rows = [kayitlar_dict[t] for t in son_tarihler]
+
+        if len(rows) < 3:
             return ""
 
-        rows.reverse()
         maddeler = []
 
-        uykular = [r[2] for r in rows if r[2] is not None]
+        # 1. Uyku analizi
+        uykular = [r["uyku_saat"] for r in rows if r["uyku_saat"] is not None]
         if uykular:
             alti_alti = sum(1 for u in uykular if u < 6.0)
             if alti_alti > 0:
@@ -546,14 +601,17 @@ def trend_ozeti(tarih: str) -> str:
                 ortalama_uyku = round(sum(uykular) / len(uykular), 1)
                 maddeler.append(f"Uyku ortalaması {ortalama_uyku} saat ile dengeli.")
 
+        # 2. Alan puanları dalgalanma analizi
         alan_puanlari = {a: [] for a in ALANLAR}
         for r in rows:
-            if r[4]:
+            pj_raw = r["puanlar_json"]
+            if pj_raw:
                 try:
-                    pjs = json.loads(r[4])
+                    pjs = json.loads(pj_raw) if isinstance(pj_raw, str) else pj_raw
                     for a, val in pjs.items():
-                        if val is not None and a in alan_puanlari:
-                            alan_puanlari[a].append(val)
+                        norm_a = _alan_normalize(a)
+                        if val is not None and norm_a in alan_puanlari:
+                            alan_puanlari[norm_a].append(val)
                 except Exception:
                     pass
         for alan, p_list in alan_puanlari.items():
@@ -562,8 +620,9 @@ def trend_ozeti(tarih: str) -> str:
                 maddeler.append(f"{_tr_baslik(alan)} puanları dalgalı ({dalga_str}).")
                 break
 
-        odakli_puanlar = [r[1] for r in rows if r[3] and r[1] is not None]
-        odaksiz_puanlar = [r[1] for r in rows if not r[3] and r[1] is not None]
+        # 3. Odaklı / Odaksız gün kıyası
+        odakli_puanlar = [r["total_puan"] for r in rows if r.get("ana_odak") and r.get("total_puan") is not None]
+        odaksiz_puanlar = [r["total_puan"] for r in rows if not r.get("ana_odak") and r.get("total_puan") is not None]
         if odakli_puanlar and odaksiz_puanlar:
             fark = (sum(odakli_puanlar)/len(odakli_puanlar)) - (sum(odaksiz_puanlar)/len(odaksiz_puanlar))
             if abs(fark) >= 0.5:
@@ -573,12 +632,13 @@ def trend_ozeti(tarih: str) -> str:
                     maddeler.append(f"Ana Odak beyan edilen günlerde ortalama skor {round(abs(fark), 1)} puan daha düşük.")
 
         if not maddeler:
-            toplam_skorlar = [r[1] for r in rows if r[1] is not None]
+            toplam_skorlar = [r["total_puan"] for r in rows if r.get("total_puan") is not None]
             if toplam_skorlar:
                 ort = round(sum(toplam_skorlar) / len(toplam_skorlar), 1)
                 maddeler.append(f"Son {len(rows)} günün genel performans ortalaması {ort} / 10.")
 
-        cikti = "### 📈 TREND\nSon 7 günde:\n" + "\n".join(f"- {m}" for m in maddeler)
+        gun_sayisi = min(7, len(rows))
+        cikti = f"### 📈 TREND\nSon {gun_sayisi} günde:\n" + "\n".join(f"- {m}" for m in maddeler)
         return cikti
     except Exception as e:
         print(f"[Trend Hata]: trend_ozeti olusturulamadi: {e}", file=sys.stderr)
@@ -590,6 +650,9 @@ def raporu_birlestir(analiz_metni: str, soz_blogu: str, total_puan: float | None
     temiz_analiz = re.sub(r"KISIT KAPAT:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
     temiz_analiz = re.sub(r"PUANLAR:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
     temiz_analiz = re.sub(r"UYKU_SAAT:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+    temiz_analiz = re.sub(r"BEYAN_EDILEN_ODAK:\s*[^\n]+\n?", "", temiz_analiz, flags=re.IGNORECASE)
+    # Gemini bazen analiz sonuna kafasına göre TREND ekleyebilir, çift trend olmasın diye temizle
+    temiz_analiz = re.sub(r"### 📈 TREND.*?(?=###|\Z)", "", temiz_analiz, flags=re.DOTALL)
 
     if istisna_modu:
         skor_blogu = "\n### 🧮 PERFORMANS SKORU\n⚠️ **İSTİSNA MODU AKTİF:** Puanlama askıya alındı. Toparlanmaya odaklanın.\n"
@@ -864,6 +927,7 @@ DEĞERLENDİRME VE TON İLKELERİ:
 ZORUNLU ÇIKTI TEKNİK SATIRLARI (Çıktının başında veya sonunda yer almalıdır):
 SÖZ ID: [0-37 arası bir tam sayı]
 UYKU_SAAT: [Eğer kullanıcı kaç saat uyuduğunu belirttiyse sayı, örn: 7.5; belirtmediyse None]
+BEYAN_EDILEN_ODAK: [Kullanıcı metinde/seste açıkça bir 'ana hedef' veya 'ana odak' beyan ettiyse <ALAN>: <HEDEF>; belirtmediyse NONE]
 PUANLAR: BESLENME=X; SPOR=X; UYKU=X; KİŞİSEL GELİŞİM=X; FİNANS=X; SOSYAL İLİŞKİLER=X; YAZILIM=X (Puanı olmayan alanlara N/A yaz)
 (Gerekirse KISIT EKLE: ... veya KISIT KAPAT: ... veya İSTİSNA MODU: AKTİF)
 
@@ -1002,10 +1066,10 @@ async def grafik_gonder_komutu(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def odak_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE, gelen_metin: str):
     arg = gelen_metin.strip()
-    if arg.lower().startswith("/odak"):
-        arg = arg[5:].strip()
-    elif arg.lower().startswith("odak"):
-        arg = arg[4:].strip()
+    for prefix in ["/odak", "/hedef", "ana odak", "ana hedef", "odak", "hedef"]:
+        if arg.lower().startswith(prefix):
+            arg = arg[len(prefix):].strip()
+            break
     if arg.startswith(":"):
         arg = arg[1:].strip()
 
@@ -1018,14 +1082,14 @@ async def odak_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE, ge
                 f"🎯 **Bugünün Ana Odağı:** {_tr_baslik(alan)}\n"
                 f"🔥 **Mod:** GROWTH MODE (1.6x Ağırlık)\n"
                 f"🎯 **Hedef:** {hedef}\n\n"
-                f"Değiştirmek için: `odak <alan>: <somut hedef>`",
+                f"Değiştirmek için: `odak <alan>: <somut hedef>` veya `hedef <alan>: <somut hedef>`",
                 parse_mode="Markdown"
             )
         else:
             await update.message.reply_text(
                 "ℹ️ Bugün için henüz bir Ana Odak belirlenmedi.\n\n"
-                "Belirlemek için: `odak <alan>: <somut hedef>`\n"
-                "Örn: `odak yazılım: Company Discovery Engine flow'unu tamamla`",
+                "Belirlemek için: `odak <alan>: <somut hedef>` veya `hedef <alan>: <somut hedef>`\n"
+                "Örn: `hedef yazılım: Telegram botu ve algoritma tamamlanacak`",
                 parse_mode="Markdown"
             )
         return
@@ -1034,7 +1098,7 @@ async def odak_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE, ge
     if len(parcalar) < 2 or not parcalar[1].strip():
         await update.message.reply_text(
             "⚠️ **Hedefsiz odak kabul edilmez!** Lütfen somut bir çıktı hedefi belirtin.\n\n"
-            "Örnek: `odak yazılım: Company Discovery Engine flow'unu tamamla`",
+            "Örnek: `hedef yazılım: Telegram botu ve algoritma tamamlanacak`",
             parse_mode="Markdown"
         )
         return
@@ -1071,8 +1135,13 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gelen_mesaj = update.message.text
     msg_clean = gelen_mesaj.strip().lower().replace('i̇', 'i').replace('ı', 'i')
     
-    # 1. ANA ODAK KONTROLÜ (En başta, grafik kontrolünden önce!)
-    if msg_clean == "odak" or msg_clean.startswith("odak ") or msg_clean.startswith("odak:"):
+    # 1. ANA ODAK / HEDEF KONTROLÜ (En başta, grafik kontrolünden önce!)
+    odak_tetikleyiciler = ["odak", "hedef", "ana odak", "ana hedef", "/odak", "/hedef"]
+    is_odak_komutu = any(
+        msg_clean == t or msg_clean.startswith(f"{t} ") or msg_clean.startswith(f"{t}:")
+        for t in odak_tetikleyiciler
+    )
+    if is_odak_komutu and len(gelen_mesaj.splitlines()) <= 3:
         await odak_yoneticisi(update, context, gelen_mesaj)
         return
 
@@ -1164,13 +1233,10 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         hedef_tarih, temiz_girdi = tarih_ayıkla(gelen_mesaj)
 
-        # Madde 4: Satır içi "Ana Odak: X" kontrolü
-        m_inline = re.search(r"Ana Odak:\s*([^\n\-–:]+)(?:[\-–:]\s*([^\n]+))?", temiz_girdi, re.IGNORECASE)
-        if m_inline:
-            inline_alan = _alan_normalize(m_inline.group(1).strip())
-            if inline_alan:
-                inline_hedef = (m_inline.group(2) or "Günlük Odak Hedefi").strip()
-                odak_kaydet(hedef_tarih, inline_alan, inline_hedef)
+        # 1. Metin içinden 'Ana Odak' veya 'Ana Hedef' yakalama
+        yakalanan_alan, yakalanan_hedef = metinden_odak_ayikla(temiz_girdi)
+        if yakalanan_alan:
+            odak_kaydet(hedef_tarih, yakalanan_alan, yakalanan_hedef)
 
         ana_odak, odak_hedef = odak_getir(hedef_tarih)
         onceki_odak, onceki_hedef, onceki_puan = onceki_odak_getir(hedef_tarih)
@@ -1194,11 +1260,22 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Hedeflenen Kayıt Tarihi KESİNLİKLE: {hedef_tarih}\n\n"
             f"Kullanıcının Yeni Girdisi:\n{temiz_girdi}\n\n"
             f"Geçmiş Performanslar (Gelişim kıyası referansı):\n{gecmis_konsept}\n\n"
-            f"Talimatlara uygun olarak analizi, teknik satırları (SÖZ ID, PUANLAR vb.) ve karne formatını eksiksiz üret."
+            f"Talimatlara uygun olarak analizi, teknik satırları (SÖZ ID, PUANLAR, BEYAN_EDILEN_ODAK vb.) ve karne formatını eksiksiz üret."
         )
 
         response = await call_gemini_with_fallback(contents=prompt, system_instruction=dinamik_instruction)
         raw_analiz = response.text
+
+        # Eğer metinden regex kaçırdıysa, Gemini'nin tespit ettiği BEYAN_EDILEN_ODAK kontrolü
+        if not ana_odak:
+            m_beyan = re.search(r"BEYAN_EDILEN_ODAK:\s*([^\n]+)", raw_analiz, re.IGNORECASE)
+            if m_beyan:
+                beyan_val = m_beyan.group(1).strip()
+                if beyan_val.upper() not in ["NONE", "N/A", "YOK"]:
+                    g_alan, g_hedef = metinden_odak_ayikla(beyan_val)
+                    if g_alan:
+                        odak_kaydet(hedef_tarih, g_alan, g_hedef)
+                        ana_odak, odak_hedef = g_alan, g_hedef
 
         # Kısıt yönetimi ayrıştırma
         m_kisit_ekle = re.search(r"KISIT EKLE:\s*([^\n]+)", raw_analiz, re.IGNORECASE)
@@ -1219,9 +1296,17 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         puanlar = puanlari_ayristir(raw_analiz)
         total_puan = None if istisna else agirlikli_skor(puanlar, ana_odak)
 
-        # Günün sözü ve trend
+        # Günün sözü ve trend (Trend bugünün hesaplanan skoru ile birlikte üretilir)
         soz_blogu = gunun_sozu(raw_analiz, hedef_tarih)
-        trend_metni = trend_ozeti(hedef_tarih)
+        bugun_kaydi_gecici = {
+            "tarih": hedef_tarih,
+            "total_puan": total_puan,
+            "uyku_saat": uyku_saat,
+            "ana_odak": ana_odak,
+            "puanlar_json": json.dumps(puanlar, ensure_ascii=False) if puanlar else None,
+            "istisna_modu": 1 if istisna else 0
+        }
+        trend_metni = trend_ozeti(hedef_tarih, bugun_kaydi=bugun_kaydi_gecici)
 
         # Raporu birleştir (Madde 6: Rapor temizliği dahil)
         son_rapor = raporu_birlestir(raw_analiz, soz_blogu, total_puan, trend_metni, istisna)
@@ -1348,14 +1433,22 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             if parsed_date:
                 hedef_tarih = parsed_date
 
-        m_inline = re.search(r"Ana Odak:\s*([^\n\-–:]+)(?:[\-–:]\s*([^\n]+))?", döküm_bolumu, re.IGNORECASE)
-        if m_inline:
-            inline_alan = _alan_normalize(m_inline.group(1).strip())
-            if inline_alan:
-                inline_hedef = (m_inline.group(2) or "Günlük Odak Hedefi").strip()
-                odak_kaydet(hedef_tarih, inline_alan, inline_hedef)
+        # 1. Ses dökümünden 'Ana Odak' veya 'Ana Hedef' yakalama
+        yakalanan_alan, yakalanan_hedef = metinden_odak_ayikla(döküm_bolumu)
+        if yakalanan_alan:
+            odak_kaydet(hedef_tarih, yakalanan_alan, yakalanan_hedef)
 
+        # 2. Gemini analizindeki BEYAN_EDILEN_ODAK satırını kontrol et
         ana_odak, odak_hedef = odak_getir(hedef_tarih)
+        if not ana_odak:
+            m_beyan = re.search(r"BEYAN_EDILEN_ODAK:\s*([^\n]+)", analiz_bolumu, re.IGNORECASE)
+            if m_beyan:
+                beyan_val = m_beyan.group(1).strip()
+                if beyan_val.upper() not in ["NONE", "N/A", "YOK"]:
+                    g_alan, g_hedef = metinden_odak_ayikla(beyan_val)
+                    if g_alan:
+                        odak_kaydet(hedef_tarih, g_alan, g_hedef)
+                        ana_odak, odak_hedef = g_alan, g_hedef
 
         m_kisit_ekle = re.search(r"KISIT EKLE:\s*([^\n]+)", analiz_bolumu, re.IGNORECASE)
         if m_kisit_ekle:
@@ -1371,7 +1464,15 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         total_puan = None if istisna else agirlikli_skor(puanlar, ana_odak)
 
         soz_blogu = gunun_sozu(analiz_bolumu, hedef_tarih)
-        trend_metni = trend_ozeti(hedef_tarih)
+        bugun_kaydi_gecici = {
+            "tarih": hedef_tarih,
+            "total_puan": total_puan,
+            "uyku_saat": uyku_saat,
+            "ana_odak": ana_odak,
+            "puanlar_json": json.dumps(puanlar, ensure_ascii=False) if puanlar else None,
+            "istisna_modu": 1 if istisna else 0
+        }
+        trend_metni = trend_ozeti(hedef_tarih, bugun_kaydi=bugun_kaydi_gecici)
         son_analiz = raporu_birlestir(analiz_bolumu, soz_blogu, total_puan, trend_metni, istisna)
 
         if döküm_bolumu and döküm_bolumu != "Döküm ayıklanamadı.":
@@ -1424,6 +1525,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_komutu))
     app.add_handler(CommandHandler("grafik", grafik_gonder_komutu))
     app.add_handler(CommandHandler("odak", odak_komutu))
+    app.add_handler(CommandHandler("hedef", odak_komutu))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_yoneticisi))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, ses_mesaj_yoneticisi))
     
