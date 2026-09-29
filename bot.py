@@ -201,12 +201,17 @@ class DatabaseManager:
 
     def get_connection(self):
         if self.is_postgres:
-            try:
-                import psycopg2
-                conn = psycopg2.connect(self.db_url, connect_timeout=3)
-                return conn, "%s"
-            except Exception as e:
-                print(f"[Veritabani Uyari]: DATABASE_URL tanimli ancak baglanti kurulamadi ({e}). Yerel SQLite'a geciliyor...", file=sys.stderr)
+            for deneme in range(3):
+                try:
+                    import psycopg2
+                    conn = psycopg2.connect(self.db_url, connect_timeout=15)
+                    return conn, "%s"
+                except Exception as e:
+                    print(f"[Veritabani Uyari]: Neon Postgres baglanti denemesi {deneme+1}/3 basarisiz ({e})...", file=sys.stderr)
+                    if deneme < 2:
+                        import time
+                        time.sleep(2)
+            print("[Veritabani Hata]: Neon Postgres'e baglanilamadi! Yerel SQLite fallback calisiyor...", file=sys.stderr)
         
         db_dir = os.path.dirname(DB_FILE)
         if db_dir and not os.path.exists(db_dir):
