@@ -194,9 +194,14 @@ def gunun_sozu(analiz: str, tarih: str) -> str:
     return f"🗣️ **GÜNÜN SÖZÜ**\n\n> \"{soz}\""
 
 # --- 2. VERİTABANI VE GRAFİK YÖNETİCİSİ ---
+NEON_DEFAULT_URL = "postgresql://neondb_owner:npg_12ZbeCsihXyc@ep-twilight-credit-b47g2z9t-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
+
 class DatabaseManager:
     def __init__(self):
-        self.db_url = os.environ.get("DATABASE_URL")
+        if os.environ.get("DATABASE_PATH"):
+            self.db_url = None
+        else:
+            self.db_url = os.environ.get("DATABASE_URL") or NEON_DEFAULT_URL
         self.is_postgres = self.db_url is not None and self.db_url.startswith("postgres")
 
     def get_connection(self):
