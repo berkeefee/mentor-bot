@@ -720,15 +720,18 @@ def grafik_olustur():
         return False
 
     today = datetime.now(TR_TZ).date()
-    recent_start = today - timedelta(days=9)
+    end_date = today if (today.strftime("%Y-%m-%d") in kayitlar) else (today - timedelta(days=1))
+    if valid_dates and max(valid_dates) > end_date:
+        end_date = max(valid_dates)
+    recent_start = end_date - timedelta(days=9)
 
     # 1. Geçmiş tarihler (Son 10 gün öncesi, yalnızca kaydı olan günler)
     past_dates = [datetime.strptime(t, "%Y-%m-%d").date() for t in sorted(kayitlar.keys()) if datetime.strptime(t, "%Y-%m-%d").date() < recent_start]
 
-    # 2. Son 10 gün (Takvimsel olarak her gün eksiksiz: recent_start .. today)
+    # 2. Son 10 gün (Takvimsel olarak her gün eksiksiz: recent_start .. end_date)
     recent_dates = []
     curr = recent_start
-    while curr <= today:
+    while curr <= end_date:
         recent_dates.append(curr)
         curr += timedelta(days=1)
 
