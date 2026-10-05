@@ -999,13 +999,15 @@ def build_system_instruction(ana_odak=None, odak_hedef=None,
     return f"{TEMEL_TALIMAT}\n\n" + "\n\n".join(ekler)
 
 async def call_gemini_with_fallback(contents, system_instruction=None):
-    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     models_to_try = [
         primary_model,
-        "gemini-2.5-flash",
-        "gemini-3.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-flash-latest"
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash-8b",
+        "gemini-flash-latest",
+        "gemini-1.5-pro"
     ]
     seen = set()
     unique_models = []
@@ -1033,10 +1035,13 @@ async def call_gemini_with_fallback(contents, system_instruction=None):
                 err_msg = str(e).lower()
                 print(f"[Gemini Deneme]: Model {model_name} (Deneme {attempt+1}/3) basarisiz oldu: {e}", file=sys.stderr)
                 if any(x in err_msg for x in ["404", "not found", "deprecated"]):
+                    # Model adı geçersizse bu modeli tekrar denemeden sonrakine geç
                     break
-                if any(x in err_msg for x in ["429", "resource_exhausted", "quota", "overloaded", "503"]):
-                    await asyncio.sleep(2 ** attempt)
+                if any(x in err_msg for x in ["429", "resource_exhausted", "quota", "overloaded", "503", "unavailable", "server error", "temporary"]):
+                    wait_time = 2 * (attempt + 1)
+                    await asyncio.sleep(wait_time)
                     continue
+                # Beklenmeyen diğer hatalarda sonraki modele geç
                 break
     raise last_error
 
@@ -1379,14 +1384,24 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
         file_obj = await ses.get_file(read_timeout=120, write_timeout=120, connect_timeout=60)
         await file_obj.download_to_drive(audio_path)
         
-        print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime})")
-        media_file = await client.aio.files.upload(
-            file=audio_path, 
-            config=types.UploadFileConfig(
-                mime_type=detected_mime, 
-                http_options=types.HttpOptions(timeout=180000)
-            )
-        )
+        media_file = None
+        for up_attempt in range(3):
+            try:
+                print(f"[Sistem]: Ses dosyası Gemini Files API'ye yükleniyor: {audio_path} (MIME: {detected_mime}, Deneme {up_attempt+1}/3)")
+                media_file = await client.aio.files.upload(
+                    file=audio_path, 
+                    config=types.UploadFileConfig(
+                        mime_type=detected_mime, 
+                        http_options=types.HttpOptions(timeout=180000)
+                    )
+                )
+                break
+            except Exception as up_err:
+                print(f"[Uyari]: Gemini Files API yükleme denemesi {up_attempt+1}/3 başarısız: {up_err}", file=sys.stderr)
+                if up_attempt < 2 and any(x in str(up_err).lower() for x in ["503", "unavailable", "overloaded", "server error", "timeout"]):
+                    await asyncio.sleep(2 * (up_attempt + 1))
+                else:
+                    raise up_err
         
         tarih_bugun = datetime.now(TR_TZ).strftime("%Y-%m-%d")
         tarih_dun = (datetime.now(TR_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1519,7 +1534,14 @@ async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
-        await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
+        err_lower = str(e).lower()
+        if any(x in err_lower for x in ["503", "unavailable", "overloaded"]):
+            await update.message.reply_text(
+                "⚠️ Google Gemini sunucularında anlık aşırı yoğunluk oluştu (503 Service Unavailable).\n\n"
+                "Lütfen 1-2 dakika sonra ses kaydınızı tekrar iletin veya dilerseniz doğrudan metin olarak yazabilirsiniz."
+            )
+        else:
+            await update.message.reply_text(f"❌ Ses analizi sırasında bir hata oluştu: {str(e)}")
         
     finally:
         if os.path.exists(audio_path):
