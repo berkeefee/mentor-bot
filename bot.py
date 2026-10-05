@@ -999,15 +999,14 @@ def build_system_instruction(ana_odak=None, odak_hedef=None,
     return f"{TEMEL_TALIMAT}\n\n" + "\n\n".join(ekler)
 
 async def call_gemini_with_fallback(contents, system_instruction=None):
-    primary_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    primary_model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     models_to_try = [
         primary_model,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash-8b",
         "gemini-flash-latest",
-        "gemini-1.5-pro"
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-2.0-flash"
     ]
     seen = set()
     unique_models = []
@@ -1017,6 +1016,7 @@ async def call_gemini_with_fallback(contents, system_instruction=None):
             unique_models.append(m)
             
     last_error = None
+    last_server_error = None
     for model_name in unique_models:
         for attempt in range(3):
             try:
@@ -1031,19 +1031,23 @@ async def call_gemini_with_fallback(contents, system_instruction=None):
                 )
                 return response
             except Exception as e:
-                last_error = e
                 err_msg = str(e).lower()
                 print(f"[Gemini Deneme]: Model {model_name} (Deneme {attempt+1}/3) basarisiz oldu: {e}", file=sys.stderr)
                 if any(x in err_msg for x in ["404", "not found", "deprecated"]):
-                    # Model adı geçersizse bu modeli tekrar denemeden sonrakine geç
+                    # 404 veren model adını son hata yapma, atla
+                    if not last_error:
+                        last_error = e
                     break
+                # Sunucu / kota / geçici hatalar
+                last_server_error = e
+                last_error = e
                 if any(x in err_msg for x in ["429", "resource_exhausted", "quota", "overloaded", "503", "unavailable", "server error", "temporary"]):
                     wait_time = 2 * (attempt + 1)
                     await asyncio.sleep(wait_time)
                     continue
                 # Beklenmeyen diğer hatalarda sonraki modele geç
                 break
-    raise last_error
+    raise (last_server_error or last_error)
 
 # --- 6. TELEGRAM MESAJ YÖNETİCİLERİ ---
 
@@ -1359,7 +1363,14 @@ async def mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("ℹ️ Grafiğinizin çizilebilmesi için veritabanında kaydınızın bulunması gerekmektedir.")
             
     except Exception as e:
-        await update.message.reply_text(f"❌ Analiz sırasında bir hata oluştu: {str(e)}")
+        err_lower = str(e).lower()
+        if any(x in err_lower for x in ["503", "unavailable", "overloaded"]):
+            await update.message.reply_text(
+                "⚠️ Google Gemini sunucularında anlık aşırı yoğunluk oluştu (503 Service Unavailable).\n\n"
+                "Lütfen 1-2 dakika sonra raporunuzu tekrar gönderin."
+            )
+        else:
+            await update.message.reply_text(f"❌ Analiz sırasında bir hata oluştu: {str(e)}")
 
 async def ses_mesaj_yoneticisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ses = update.message.voice or update.message.audio
