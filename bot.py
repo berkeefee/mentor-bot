@@ -36,9 +36,25 @@ telegram_app = None
 class CloudServerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.send_header("Content-type", "application/json; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"200 Bot is running.")
+        info = {
+            "is_postgres": db_manager.is_postgres,
+            "db_url_set": bool(db_manager.db_url),
+            "db_url_prefix": (db_manager.db_url[:15] if db_manager.db_url else None),
+        }
+        try:
+            conn, p = db_manager.get_connection()
+            info["connected_as"] = "postgres" if p == "%s" else "sqlite"
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM gunluk_hafiza")
+            info["count"] = cur.fetchone()[0]
+            cur.execute("SELECT tarih, total_puan FROM gunluk_hafiza ORDER BY id DESC LIMIT 5")
+            info["last_5"] = cur.fetchall()
+            conn.close()
+        except Exception as e:
+            info["error"] = str(e)
+        self.wfile.write(json.dumps(info, ensure_ascii=False).encode('utf-8'))
 
     def do_POST(self):
         try:
