@@ -216,22 +216,29 @@ class DatabaseManager:
     def __init__(self):
         if os.environ.get("DATABASE_PATH"):
             self.db_url = None
+            self.is_postgres = False
         else:
-            self.db_url = os.environ.get("DATABASE_URL") or NEON_DEFAULT_URL
-        self.is_postgres = self.db_url is not None and self.db_url.startswith("postgres")
+            # Render ortamında tanımlı DATABASE_URL eğer Neon değilse (eski/ölü postgres URL'i ise),
+            # her zaman çalışan aktif Neon veritabanı adresini kullan!
+            env_url = os.environ.get("DATABASE_URL", "")
+            if env_url and "ep-twilight-credit" in env_url:
+                self.db_url = env_url
+            else:
+                self.db_url = NEON_DEFAULT_URL
+            self.is_postgres = True
 
     def get_connection(self):
-        if self.is_postgres:
+        if self.is_postgres and self.db_url:
             for deneme in range(3):
                 try:
                     import psycopg2
-                    conn = psycopg2.connect(self.db_url, connect_timeout=15)
+                    conn = psycopg2.connect(self.db_url, connect_timeout=10)
                     return conn, "%s"
                 except Exception as e:
                     print(f"[Veritabani Uyari]: Neon Postgres baglanti denemesi {deneme+1}/3 basarisiz ({e})...", file=sys.stderr)
                     if deneme < 2:
                         import time
-                        time.sleep(2)
+                        time.sleep(1)
             print("[Veritabani Hata]: Neon Postgres'e baglanilamadi! Yerel SQLite fallback calisiyor...", file=sys.stderr)
         
         db_dir = os.path.dirname(DB_FILE)
@@ -341,6 +348,24 @@ def hafizaya_kaydet(belirlenen_tarih: str, metin: str, analiz_sonucu: str, total
         )
         conn.commit()
         conn.close()
+
+        # Eğer Postgres'e başarıyla yazıldıysa, yerel SQLite kopyasını da senkronize et
+        if p == "%s":
+            try:
+                sq_conn = sqlite3.connect(DB_FILE)
+                sq_cur = sq_conn.cursor()
+                sq_cur.execute("DELETE FROM gunluk_hafiza WHERE tarih = ?", (belirlenen_tarih,))
+                sq_cur.execute(
+                    """INSERT INTO gunluk_hafiza 
+                        (tarih, girdi, analiz, total_puan, uyku_saat, ana_odak, odak_hedef, puanlar_json, istisna_modu) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (belirlenen_tarih, metin, analiz_sonucu, total_puan, uyku_saat, ana_odak, odak_hedef, puanlar_json, istisna_modu)
+                )
+                sq_conn.commit()
+                sq_conn.close()
+            except Exception as sq_err:
+                print(f"[Uyari]: Yerel SQLite senkronizasyonu yapilamadi: {sq_err}", file=sys.stderr)
+
         return True
     except Exception as e:
         print(f"[Veritabani Hata]: hafizaya_kaydet basarisiz: {e}", file=sys.stderr)
